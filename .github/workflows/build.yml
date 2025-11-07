@@ -15,6 +15,7 @@ jobs:
   build:
     name: Build binaries
     runs-on: windows-2022
+    timeout-minutes: 60
     strategy:
       matrix:
         configuration:
@@ -39,7 +40,7 @@ jobs:
         uses: ammaraskar/msvc-problem-matcher@master
 
       - name: Build ${{matrix.configuration}} zonetool
-        run: msbuild /m /v:minimal /p:Configuration=${{matrix.configuration}} /p:Platform=x64 build/x64-zt.sln
+        run: msbuild /m:4 /v:normal /p:Configuration=${{matrix.configuration}} /p:Platform=x64 /fl /flp:LogFile=msbuild.log;Verbosity=normal build/x64-zt.sln
         timeout-minutes: 30
 
       - name: Upload ${{matrix.configuration}} zonetool
