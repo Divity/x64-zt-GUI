@@ -32,20 +32,20 @@ function zonetool:project()
 			"./deps/imgui/backends/imgui_impl_dx11.h",
 		}
 
-		-- Exclude ImGui files from PCH
-		filter "files:deps/imgui/imgui.cpp"
+		-- Exclude ImGui files from PCH - use explicit filters matching file paths
+		filter "files:**/imgui/imgui.cpp"
 			flags {"NoPCH"}
-		filter "files:deps/imgui/imgui_draw.cpp"
+		filter "files:**/imgui/imgui_draw.cpp"
 			flags {"NoPCH"}
-		filter "files:deps/imgui/imgui_tables.cpp"
+		filter "files:**/imgui/imgui_tables.cpp"
 			flags {"NoPCH"}
-		filter "files:deps/imgui/imgui_widgets.cpp"
+		filter "files:**/imgui/imgui_widgets.cpp"
 			flags {"NoPCH"}
-		filter "files:deps/imgui/imgui_demo.cpp"
+		filter "files:**/imgui/imgui_demo.cpp"
 			flags {"NoPCH"}
-		filter "files:deps/imgui/backends/imgui_impl_win32.cpp"
+		filter "files:**/imgui/backends/imgui_impl_win32.cpp"
 			flags {"NoPCH"}
-		filter "files:deps/imgui/backends/imgui_impl_dx11.cpp"
+		filter "files:**/imgui/backends/imgui_impl_dx11.cpp"
 			flags {"NoPCH"}
 		filter {}
 
