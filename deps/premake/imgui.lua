@@ -33,7 +33,7 @@ function imgui.project()
 		}
 
 		defines {
-			"IMGUI_IMPL_API=extern `"C`"",
+			"IMGUI_IMPL_API=extern \"C\"",
 		}
 end
 
