@@ -27,7 +27,7 @@ function zonetool:project()
 
 		resincludedirs {"$(ProjectDir)src"}
 
-		dependson {"tlsdll"}
+		dependson {"tlsdll", "imgui"}
 
 		links {"common"}
 
