@@ -16,21 +16,21 @@ function zonetool:project()
 			"./src/zonetool/**.hpp", 
 			"./src/zonetool/**.cpp", 
 			"./src/zonetool/resources/**.*",
-			-- ImGui core source files
+			-- ImGui core source files (standard integration - compile all .cpp files)
 			"./deps/imgui/imgui.cpp",
 			"./deps/imgui/imgui_draw.cpp",
 			"./deps/imgui/imgui_tables.cpp",
 			"./deps/imgui/imgui_widgets.cpp",
 			"./deps/imgui/imgui_demo.cpp",
-			-- ImGui header files
-			"./deps/imgui/*.h",
 			-- ImGui backend source files
 			"./deps/imgui/backends/imgui_impl_win32.cpp",
 			"./deps/imgui/backends/imgui_impl_dx11.cpp",
-			-- ImGui backend header files
-			"./deps/imgui/backends/imgui_impl_win32.h",
-			"./deps/imgui/backends/imgui_impl_dx11.h",
 		}
+
+		-- Exclude all ImGui files from PCH (they are standalone library files)
+		filter "files:**/imgui/**.cpp"
+			flags {"NoPCH"}
+		filter {}
 
 		includedirs {
 			"./src", 

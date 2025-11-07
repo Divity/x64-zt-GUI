@@ -11,19 +11,16 @@
 #include "component/t7/command.hpp"
 #include "resource.hpp"
 
-#include <imgui.h>
 #include <d3d11.h>
 #include <dxgi.h>
 
-extern "C" {
-#ifndef IMGUI_IMPL_API
-#define IMGUI_IMPL_API
-#endif
+// ImGui headers (implementation compiled separately via project files)
+#include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
 
-LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-}
+// Forward declare message handler from imgui_impl_win32.cpp
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 #include <utils/thread.hpp>
 #include <utils/io.hpp>
