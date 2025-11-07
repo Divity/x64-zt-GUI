@@ -24,6 +24,14 @@ function zonetool:project()
 			"./deps/imgui/backends/imgui_impl_dx11.h",
 		}
 
+		filter "files:**/imgui/*.cpp"
+			flags {"NoPCH"}
+		
+		filter "files:**/imgui/backends/*.cpp"
+			flags {"NoPCH"}
+		
+		filter {}
+
 		includedirs {
 			"./src", 
 			"./src/zonetool", 
