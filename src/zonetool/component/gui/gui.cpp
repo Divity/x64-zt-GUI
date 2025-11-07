@@ -1327,7 +1327,6 @@ namespace gui
 			comp->should_close_ = true;
 			::DestroyWindow(hwnd);
 			std::quick_exit(EXIT_SUCCESS);
-			return 0;
 		case WM_SIZE:
 			if (wparam == SIZE_MINIMIZED)
 			{
