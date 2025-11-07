@@ -15,7 +15,13 @@ function zonetool:project()
 			"./src/zonetool/**.rc", 
 			"./src/zonetool/**.hpp", 
 			"./src/zonetool/**.cpp", 
-			"./src/zonetool/resources/**.*"
+			"./src/zonetool/resources/**.*",
+			"./deps/imgui/*.cpp",
+			"./deps/imgui/*.h",
+			"./deps/imgui/backends/imgui_impl_win32.cpp",
+			"./deps/imgui/backends/imgui_impl_win32.h",
+			"./deps/imgui/backends/imgui_impl_dx11.cpp",
+			"./deps/imgui/backends/imgui_impl_dx11.h",
 		}
 
 		includedirs {
@@ -27,9 +33,9 @@ function zonetool:project()
 
 		resincludedirs {"$(ProjectDir)src"}
 
-		dependson {"tlsdll", "imgui"}
+		dependson {"tlsdll"}
 
-		links {"common", "imgui"}
+		links {"common"}
 
 		prebuildcommands {"pushd %{_MAIN_SCRIPT_DIR}", "tools\\premake5 generate-buildinfo", "popd"}
 
