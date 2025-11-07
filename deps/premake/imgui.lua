@@ -31,10 +31,6 @@ function imgui.project()
 			path.join(imgui.backends, "imgui_impl_dx11.cpp"),
 			path.join(imgui.backends, "imgui_impl_dx11.h"),
 		}
-
-		defines {
-			"IMGUI_IMPL_API=extern \"C\"",
-		}
 end
 
 table.insert(dependencies, imgui)
