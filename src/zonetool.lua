@@ -31,8 +31,6 @@ function zonetool:project()
 
 		links {"common"}
 
-		imgui.import()
-
 		prebuildcommands {"pushd %{_MAIN_SCRIPT_DIR}", "tools\\premake5 generate-buildinfo", "popd"}
 
 		if COMPUTER_NAME == "JOEL-PC" then
@@ -62,4 +60,5 @@ function zonetool:project()
 		addcopyopt("iw7-copy-to")
 		
 		dependencies.imports()
+		imgui.import()
 end
