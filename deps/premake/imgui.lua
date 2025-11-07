@@ -15,6 +15,8 @@ function imgui.includes()
 end
 
 function imgui.project()
+	-- Empty - source files included directly in zonetool project via src/zonetool.lua
+	-- This prevents creation of imgui.vcxproj while keeping imgui in dependencies
 end
 
 table.insert(dependencies, imgui)
