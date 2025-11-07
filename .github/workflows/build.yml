@@ -40,6 +40,7 @@ jobs:
 
       - name: Build ${{matrix.configuration}} zonetool
         run: msbuild /m /v:minimal /p:Configuration=${{matrix.configuration}} /p:Platform=x64 build/x64-zt.sln
+        timeout-minutes: 30
 
       - name: Upload ${{matrix.configuration}} zonetool
         uses: actions/upload-artifact@v4
