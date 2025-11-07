@@ -33,6 +33,7 @@ jobs:
 
       - name: Generate project files
         run: generate.bat vs2022
+        shell: cmd
 
       - name: Set up problem matching
         uses: ammaraskar/msvc-problem-matcher@master
