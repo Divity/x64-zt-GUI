@@ -29,7 +29,7 @@ function zonetool:project()
 
 		dependson {"tlsdll", "imgui"}
 
-		links {"common"}
+		links {"common", "imgui"}
 
 		prebuildcommands {"pushd %{_MAIN_SCRIPT_DIR}", "tools\\premake5 generate-buildinfo", "popd"}
 
@@ -60,5 +60,4 @@ function zonetool:project()
 		addcopyopt("iw7-copy-to")
 		
 		dependencies.imports()
-		imgui.import()
 end
