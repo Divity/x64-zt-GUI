@@ -48,6 +48,7 @@ jobs:
           ) else (
             echo Solution file found
           )
+        shell: cmd
 
       - name: Build ${{matrix.configuration}} zonetool
         run: msbuild /m:4 /v:normal /p:Configuration=${{matrix.configuration}} /p:Platform=x64 /fl /flp:LogFile=msbuild.log;Verbosity=normal build\x64-zt.sln
