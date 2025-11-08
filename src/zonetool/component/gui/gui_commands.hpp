@@ -27,6 +27,7 @@ namespace gui
 		std::vector<std::string> discover_map_zones();
 		std::vector<std::string> discover_csv_files();
 		std::vector<std::string> discover_zonetool_maps();
+		std::vector<std::string> get_available_asset_types();
 	}
 
 }

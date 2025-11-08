@@ -190,7 +190,7 @@ namespace zonetool::iw6
 		}
 		catch (std::exception& ex)
 		{
-			ZONETOOL_FATAL("A fatal exception occured while dumping zone \"%s\", exception was: \n%s", filesystem::get_fastfile().data(), ex.what());
+			ZONETOOL_ERROR_RECOVERABLE("An exception occurred while dumping zone \"%s\": %s", filesystem::get_fastfile().data(), ex.what());
 		}
 
 #undef DUMP_ASSET_CONVERT
@@ -304,7 +304,7 @@ namespace zonetool::iw6
 		}
 		catch (std::exception& ex)
 		{
-			ZONETOOL_FATAL("A fatal exception occured while dumping zone \"%s\", exception was: \n%s", filesystem::get_fastfile().data(), ex.what());
+			ZONETOOL_ERROR_RECOVERABLE("An exception occurred while dumping zone \"%s\": %s", filesystem::get_fastfile().data(), ex.what());
 		}
 	}
 
@@ -375,7 +375,7 @@ namespace zonetool::iw6
 		}
 		catch (std::exception& ex)
 		{
-			ZONETOOL_FATAL("A fatal exception occured while dumping zone \"%s\", exception was: \n%s", filesystem::get_fastfile().data(), ex.what());
+			ZONETOOL_ERROR_RECOVERABLE("An exception occurred while dumping zone \"%s\": %s", filesystem::get_fastfile().data(), ex.what());
 		}
 	}
 
@@ -895,7 +895,7 @@ namespace zonetool::iw6
 					}
 					catch (const std::exception& e)
 					{
-						ZONETOOL_FATAL("A fatal exception occured while building zone \"%s\", exception was: \n%s", fastfile.data(), e.what());
+						ZONETOOL_ERROR_RECOVERABLE("An exception occurred while building zone \"%s\": %s", fastfile.data(), e.what());
 					}
 				}
 			}
@@ -948,7 +948,7 @@ namespace zonetool::iw6
 					}
 					catch (std::exception& ex)
 					{
-						ZONETOOL_FATAL("A fatal exception occured while building zone \"%s\", exception was: \n%s", fastfile.data(), ex.what());
+						ZONETOOL_ERROR_RECOVERABLE("An exception occurred while building zone \"%s\": %s", fastfile.data(), ex.what());
 					}
 				}
 			}

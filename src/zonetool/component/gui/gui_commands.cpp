@@ -613,6 +613,19 @@ namespace gui
 				break;
 			}
 		}
+
+		std::vector<std::string> get_available_asset_types()
+		{
+			return {
+				"material", "xmodel", "xanimparts", "image", "sound", "techset",
+				"technique_set", "pixelshader", "vertexshader", "computeshader",
+				"hullshader", "domainshader", "vertexdecl", "physpreset", "physcollmap",
+				"comworld", "gfxworld", "fxworld", "clipmap", "map_ents", "menu",
+				"menulist", "localize_entry", "attachment", "weapon", "vehicle",
+				"fx", "impact_fx", "surface_fx", "rawfile", "scriptfile", "stringtable",
+				"leaderboard", "tracer", "addon_map_ents", "light_def", "pathdata"
+			};
+		}
 	}
 }
 

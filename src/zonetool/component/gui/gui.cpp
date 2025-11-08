@@ -28,6 +28,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 #include <cstring>
 #include <cstdlib>
+#include <algorithm>
 #include <shlobj.h>
 #include <dwmapi.h>
 
@@ -86,7 +87,14 @@ namespace gui
 		, selected_generate_csv_map_(-1)
 		, generate_csv_sp_mode_(false)
 		, auto_scroll_log_(true)
+		, filter_log_errors_warnings_(false)
 		, command_input_text_("")
+		, operation_in_progress_(false)
+		, operation_status_text_("")
+		, dump_target_mode_(game::game_mode::none)
+		, dump_asset_type_("")
+		, dump_asset_name_("")
+		, dump_map_skip_common_(false)
 		, file_watcher_running_(false)
 		, resize_width_(0)
 		, resize_height_(0)
@@ -733,10 +741,23 @@ namespace gui
 		ImGui::Spacing();
 
 		const float card_width = 350.0f;
+		const float card_height = 280.0f;
 		const float card_spacing = 8.0f;
 		const float content_width = (card_width * 3) + (card_spacing * 2);
 		const float window_width = ImGui::GetContentRegionAvail().x;
 		const float center_offset = (window_width - content_width) / 2.0f;
+
+		if (operation_in_progress_)
+		{
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+			ImGui::Text("%s", operation_status_text_.c_str());
+			ImGui::PopStyleColor();
+			ImGui::Spacing();
+			ImGui::ProgressBar(-1.0f, ImVec2(-1, 0));
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+		}
 
 		if (active_tab == 0)
 		{
@@ -745,7 +766,7 @@ namespace gui
 			if (center_offset > 0) ImGui::SetCursorPosX(center_offset);
 			
 			ImGui::BeginGroup();
-			ImGui::BeginChild("FastfileCard", ImVec2(card_width, 190), true);
+			ImGui::BeginChild("FastfileCard", ImVec2(card_width, card_height), true);
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
 			ImGui::Text("FASTFILES");
 			ImGui::PopStyleColor();
@@ -753,32 +774,166 @@ namespace gui
 			ImGui::Separator();
 			ImGui::Spacing();
 			ImGui::SetNextItemWidth(-80);
+			char fastfile_filter_buf[256] = {};
+			const size_t fastfile_filter_len = std::min(fastfile_filter_.size(), sizeof(fastfile_filter_buf) - 1);
+			std::memcpy(fastfile_filter_buf, fastfile_filter_.data(), fastfile_filter_len);
+			fastfile_filter_buf[fastfile_filter_len] = '\0';
+			
 			if (ImGui::BeginCombo("##fastfile", selected_fastfile_ >= 0 ? fastfiles_[selected_fastfile_].data() : "Select..."))
 			{
+				ImGui::SetNextItemWidth(-1);
+				if (ImGui::InputText("##fastfile_filter", fastfile_filter_buf, sizeof(fastfile_filter_buf), ImGuiInputTextFlags_AutoSelectAll))
+				{
+					fastfile_filter_ = fastfile_filter_buf;
+				}
+				ImGui::Separator();
+				
 				std::lock_guard<std::mutex> lock(fastfiles_mutex_);
 				const size_t size = fastfiles_.size();
+				std::string filter_lower = fastfile_filter_;
+				std::transform(filter_lower.begin(), filter_lower.end(), filter_lower.begin(), ::tolower);
+				
 				for (size_t i = 0; i < size; ++i)
 				{
+					if (!filter_lower.empty())
+					{
+						std::string item_lower = fastfiles_[i];
+						std::transform(item_lower.begin(), item_lower.end(), item_lower.begin(), ::tolower);
+						if (item_lower.find(filter_lower) == std::string::npos)
+							continue;
+					}
+					
 					const bool is_selected = (selected_fastfile_ == static_cast<int>(i));
 					if (ImGui::Selectable(fastfiles_[i].data(), is_selected))
+					{
 						selected_fastfile_ = static_cast<int>(i);
+						fastfile_filter_.clear();
+					}
 					if (is_selected)
 						ImGui::SetItemDefaultFocus();
 				}
 				ImGui::EndCombo();
 			}
+			else
+			{
+				fastfile_filter_.clear();
+			}
 			ImGui::SameLine();
 			if (ImGui::Button("REFRESH", ImVec2(-1, 0)))
 				refresh_fastfiles();
 			ImGui::Spacing();
-			if (ImGui::Button("DUMP SELECTED ZONE", ImVec2(-1, 32)))
+			
+			ImGui::Text("Target Mode:");
+			ImGui::SetNextItemWidth(-1);
+			const char* target_modes[] = { "Current", "H1", "H2", "S1", "IW6", "IW7", "T7" };
+			int target_mode_idx = 0;
+			if (dump_target_mode_ != game::game_mode::none)
+			{
+				switch (dump_target_mode_)
+				{
+				case game::h1: target_mode_idx = 1; break;
+				case game::h2: target_mode_idx = 2; break;
+				case game::s1: target_mode_idx = 3; break;
+				case game::iw6: target_mode_idx = 4; break;
+				case game::iw7: target_mode_idx = 5; break;
+				case game::t7: target_mode_idx = 6; break;
+				default: target_mode_idx = 0; break;
+				}
+			}
+			if (ImGui::Combo("##targetmode", &target_mode_idx, target_modes, IM_ARRAYSIZE(target_modes)))
+			{
+				switch (target_mode_idx)
+				{
+				case 0: dump_target_mode_ = game::game_mode::none; break;
+				case 1: dump_target_mode_ = game::game_mode::h1; break;
+				case 2: dump_target_mode_ = game::game_mode::h2; break;
+				case 3: dump_target_mode_ = game::game_mode::s1; break;
+				case 4: dump_target_mode_ = game::game_mode::iw6; break;
+				case 5: dump_target_mode_ = game::game_mode::iw7; break;
+				case 6: dump_target_mode_ = game::game_mode::t7; break;
+				}
+			}
+			
+			ImGui::Spacing();
+			
+			static bool show_asset_filter = false;
+			if (ImGui::CollapsingHeader("Asset Filter", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				show_asset_filter = true;
+				const auto asset_types = commands::get_available_asset_types();
+				
+				char asset_search_buf[256] = {};
+				const size_t asset_search_len = std::min(asset_filter_search_.size(), sizeof(asset_search_buf) - 1);
+				std::memcpy(asset_search_buf, asset_filter_search_.data(), asset_search_len);
+				asset_search_buf[asset_search_len] = '\0';
+				ImGui::SetNextItemWidth(-1);
+				if (ImGui::InputText("##asset_search", asset_search_buf, sizeof(asset_search_buf)))
+				{
+					asset_filter_search_ = asset_search_buf;
+				}
+				if (ImGui::IsItemHovered())
+				{
+					ImGui::BeginTooltip();
+					ImGui::Text("Filter asset types by name");
+					ImGui::EndTooltip();
+				}
+				
+				ImGui::Spacing();
+				ImGui::BeginChild("AssetFilterList", ImVec2(-1, 100), true);
+				
+				std::string filter_lower = asset_filter_search_;
+				std::transform(filter_lower.begin(), filter_lower.end(), filter_lower.begin(), ::tolower);
+				
+				for (const auto& asset_type : asset_types)
+				{
+					if (!filter_lower.empty())
+					{
+						std::string type_lower = asset_type;
+						std::transform(type_lower.begin(), type_lower.end(), type_lower.begin(), ::tolower);
+						if (type_lower.find(filter_lower) == std::string::npos)
+							continue;
+					}
+					
+					bool is_selected = selected_asset_types_.find(asset_type) != selected_asset_types_.end();
+					if (ImGui::Checkbox(asset_type.c_str(), &is_selected))
+					{
+						if (is_selected)
+							selected_asset_types_.insert(asset_type);
+						else
+							selected_asset_types_.erase(asset_type);
+					}
+				}
+				ImGui::EndChild();
+				
+				if (ImGui::Button("Clear Filter", ImVec2(-1, 0)))
+				{
+					selected_asset_types_.clear();
+				}
+			}
+			else
+			{
+				show_asset_filter = false;
+			}
+			
+			ImGui::Spacing();
+			
+			if (ImGui::Button("DUMP SELECTED ZONE", ImVec2(-1, 28)))
 			{
 				if (selected_fastfile_ >= 0)
 				{
 					std::lock_guard<std::mutex> lock(fastfiles_mutex_);
 					const size_t size = fastfiles_.size();
 					if (static_cast<size_t>(selected_fastfile_) < size)
-						commands::dump_zone(fastfiles_[selected_fastfile_]);
+					{
+						std::optional<std::unordered_set<std::string>> asset_filter = {};
+						if (!selected_asset_types_.empty())
+						{
+							asset_filter = selected_asset_types_;
+						}
+						commands::dump_zone(fastfiles_[selected_fastfile_], dump_target_mode_, asset_filter);
+						operation_in_progress_ = true;
+						operation_status_text_ = "Dumping zone: " + fastfiles_[selected_fastfile_];
+					}
 				}
 			}
 			ImGui::EndChild();
@@ -787,14 +942,14 @@ namespace gui
 			ImGui::SameLine(0, card_spacing);
 
 			ImGui::BeginGroup();
-			ImGui::BeginChild("ZoneOpsCard", ImVec2(card_width, 190), true);
+			ImGui::BeginChild("ZoneOpsCard", ImVec2(card_width, card_height), true);
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
 			ImGui::Text("ZONE OPERATIONS");
 			ImGui::PopStyleColor();
 			ImGui::Spacing();
 			ImGui::Separator();
 			ImGui::Spacing();
-			if (ImGui::Button("LOAD ZONE", ImVec2(-1, 32)))
+			if (ImGui::Button("LOAD ZONE", ImVec2(-1, 28)))
 			{
 				if (selected_fastfile_ >= 0)
 				{
@@ -804,9 +959,9 @@ namespace gui
 						commands::load_zone(fastfiles_[selected_fastfile_]);
 				}
 			}
-			if (ImGui::Button("UNLOAD ZONES", ImVec2(-1, 32)))
+			if (ImGui::Button("UNLOAD ZONES", ImVec2(-1, 28)))
 				commands::unload_zones();
-			if (ImGui::Button("VERIFY ZONE", ImVec2(-1, 32)))
+			if (ImGui::Button("VERIFY ZONE", ImVec2(-1, 28)))
 			{
 				if (selected_fastfile_ >= 0)
 				{
@@ -816,13 +971,34 @@ namespace gui
 						commands::verify_zone(fastfiles_[selected_fastfile_]);
 				}
 			}
+			ImGui::Spacing();
+			const bool iterate_zones_available = (current_mode == game::h1 || current_mode == game::iw7 || current_mode == game::t7);
+			if (!iterate_zones_available) ImGui::BeginDisabled();
+			if (ImGui::Button("ITERATE ZONES", ImVec2(-1, 28)))
+			{
+				commands::iterate_zones();
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				if (current_mode == game::t7)
+				{
+					ImGui::Text("Available in H1, IW7, T7.\nIterates through all .ff files in zone/ directory, loading and unloading each.");
+				}
+				else
+				{
+					ImGui::Text("Available in H1, IW7, T7.\nIterates through all .ff files in zone/ and zone/english/ directories, loading and unloading each.");
+				}
+				ImGui::EndTooltip();
+			}
+			if (!iterate_zones_available) ImGui::EndDisabled();
 			ImGui::EndChild();
 			ImGui::EndGroup();
 
 			ImGui::SameLine(0, card_spacing);
 
 			ImGui::BeginGroup();
-			ImGui::BeginChild("DumpMapCard", ImVec2(card_width, 190), true);
+			ImGui::BeginChild("DumpMapCard", ImVec2(card_width, card_height), true);
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
 			ImGui::Text("DUMP MAP");
 			ImGui::PopStyleColor();
@@ -830,28 +1006,80 @@ namespace gui
 			ImGui::Separator();
 			ImGui::Spacing();
 			ImGui::SetNextItemWidth(-1);
+			char map_zone_filter_buf[256] = {};
+			const size_t map_zone_filter_len = std::min(map_zone_filter_.size(), sizeof(map_zone_filter_buf) - 1);
+			std::memcpy(map_zone_filter_buf, map_zone_filter_.data(), map_zone_filter_len);
+			map_zone_filter_buf[map_zone_filter_len] = '\0';
+			
 			if (ImGui::BeginCombo("##mapzone", selected_map_zone_ >= 0 ? map_zones_[selected_map_zone_].data() : "Select map..."))
 			{
+				ImGui::SetNextItemWidth(-1);
+				if (ImGui::InputText("##mapzone_filter", map_zone_filter_buf, sizeof(map_zone_filter_buf), ImGuiInputTextFlags_AutoSelectAll))
+				{
+					map_zone_filter_ = map_zone_filter_buf;
+				}
+				ImGui::Separator();
+				
 				std::lock_guard<std::mutex> lock(map_zones_mutex_);
 				const size_t size = map_zones_.size();
+				std::string filter_lower = map_zone_filter_;
+				std::transform(filter_lower.begin(), filter_lower.end(), filter_lower.begin(), ::tolower);
+				
 				for (size_t i = 0; i < size; ++i)
 				{
+					if (!filter_lower.empty())
+					{
+						std::string item_lower = map_zones_[i];
+						std::transform(item_lower.begin(), item_lower.end(), item_lower.begin(), ::tolower);
+						if (item_lower.find(filter_lower) == std::string::npos)
+							continue;
+					}
+					
 					const bool is_selected = (selected_map_zone_ == static_cast<int>(i));
 					if (ImGui::Selectable(map_zones_[i].data(), is_selected))
+					{
 						selected_map_zone_ = static_cast<int>(i);
+						map_zone_filter_.clear();
+					}
 					if (is_selected)
 						ImGui::SetItemDefaultFocus();
 				}
 				ImGui::EndCombo();
 			}
-			if (ImGui::Button("DUMP MAP", ImVec2(-1, 32)))
+			else
+			{
+				map_zone_filter_.clear();
+			}
+			
+			ImGui::Spacing();
+			
+			ImGui::Checkbox("Skip Common Assets", &dump_map_skip_common_);
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Skip common assets when dumping maps");
+				ImGui::EndTooltip();
+			}
+			
+			ImGui::Spacing();
+			
+			if (ImGui::Button("DUMP MAP", ImVec2(-1, 28)))
 			{
 				if (selected_map_zone_ >= 0)
 				{
 					std::lock_guard<std::mutex> lock(map_zones_mutex_);
 					const size_t size = map_zones_.size();
 					if (static_cast<size_t>(selected_map_zone_) < size)
-						commands::dump_map(map_zones_[selected_map_zone_]);
+					{
+						std::optional<std::unordered_set<std::string>> asset_filter = {};
+						if (!selected_asset_types_.empty())
+						{
+							asset_filter = selected_asset_types_;
+						}
+						commands::dump_map(map_zones_[selected_map_zone_], dump_target_mode_, asset_filter, dump_map_skip_common_);
+						operation_in_progress_ = true;
+						operation_status_text_ = "Dumping map: " + map_zones_[selected_map_zone_];
+					}
 				}
 			}
 			ImGui::EndChild();
@@ -862,7 +1090,7 @@ namespace gui
 			const bool dump_csv_available = (current_mode == game::h1 || current_mode == game::s1 || current_mode == game::iw7 || current_mode == game::t7);
 			if (!dump_csv_available) ImGui::BeginDisabled();
 			ImGui::BeginGroup();
-			ImGui::BeginChild("DumpCsvCard", ImVec2(card_width, 190), true);
+			ImGui::BeginChild("DumpCsvCard", ImVec2(card_width, card_height), true);
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
 			ImGui::Text("DUMP CSV");
 			ImGui::PopStyleColor();
@@ -870,21 +1098,51 @@ namespace gui
 			ImGui::Separator();
 			ImGui::Spacing();
 			ImGui::SetNextItemWidth(-1);
+			char csv_filter_buf[256] = {};
+			const size_t csv_filter_len = std::min(csv_filter_.size(), sizeof(csv_filter_buf) - 1);
+			std::memcpy(csv_filter_buf, csv_filter_.data(), csv_filter_len);
+			csv_filter_buf[csv_filter_len] = '\0';
+			
 			if (ImGui::BeginCombo("##csvzone", selected_fastfile_ >= 0 ? fastfiles_[selected_fastfile_].data() : "Select zone..."))
 			{
+				ImGui::SetNextItemWidth(-1);
+				if (ImGui::InputText("##csvzone_filter", csv_filter_buf, sizeof(csv_filter_buf), ImGuiInputTextFlags_AutoSelectAll))
+				{
+					csv_filter_ = csv_filter_buf;
+				}
+				ImGui::Separator();
+				
 				std::lock_guard<std::mutex> lock(fastfiles_mutex_);
 				const size_t size = fastfiles_.size();
+				std::string filter_lower = csv_filter_;
+				std::transform(filter_lower.begin(), filter_lower.end(), filter_lower.begin(), ::tolower);
+				
 				for (size_t i = 0; i < size; ++i)
 				{
+					if (!filter_lower.empty())
+					{
+						std::string item_lower = fastfiles_[i];
+						std::transform(item_lower.begin(), item_lower.end(), item_lower.begin(), ::tolower);
+						if (item_lower.find(filter_lower) == std::string::npos)
+							continue;
+					}
+					
 					const bool is_selected = (selected_fastfile_ == static_cast<int>(i));
 					if (ImGui::Selectable(fastfiles_[i].data(), is_selected))
+					{
 						selected_fastfile_ = static_cast<int>(i);
+						csv_filter_.clear();
+					}
 					if (is_selected)
 						ImGui::SetItemDefaultFocus();
 				}
 				ImGui::EndCombo();
 			}
-			if (ImGui::Button("DUMP CSV", ImVec2(-1, 32)))
+			else
+			{
+				csv_filter_.clear();
+			}
+			if (ImGui::Button("DUMP CSV", ImVec2(-1, 28)))
 			{
 				if (selected_fastfile_ >= 0)
 				{
@@ -915,52 +1173,75 @@ namespace gui
 
 			ImGui::SameLine(0, card_spacing);
 
-			const bool iterate_zones_available = (current_mode == game::h1 || current_mode == game::iw7 || current_mode == game::t7);
-			if (!iterate_zones_available) ImGui::BeginDisabled();
 			ImGui::BeginGroup();
-			ImGui::BeginChild("IterateZonesCard", ImVec2(card_width, 190), true);
+			ImGui::BeginChild("DumpAssetCard", ImVec2(card_width, card_height), true);
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
-			ImGui::Text("ITERATE ZONES");
+			ImGui::Text("DUMP ASSET");
 			ImGui::PopStyleColor();
 			ImGui::Spacing();
 			ImGui::Separator();
 			ImGui::Spacing();
-			if (ImGui::Button("ITERATE ZONES", ImVec2(-1, 32)))
+			ImGui::Text("Asset Type:");
+			ImGui::SetNextItemWidth(-1);
+			const auto asset_types = commands::get_available_asset_types();
+			if (ImGui::BeginCombo("##assettype", dump_asset_type_.empty() ? "Select type..." : dump_asset_type_.c_str()))
 			{
-				commands::iterate_zones();
+				std::string filter_lower;
+				char asset_type_search_buf[256] = {};
+				ImGui::SetNextItemWidth(-1);
+				if (ImGui::InputText("##assettype_search", asset_type_search_buf, sizeof(asset_type_search_buf), ImGuiInputTextFlags_AutoSelectAll))
+				{
+					filter_lower = asset_type_search_buf;
+					std::transform(filter_lower.begin(), filter_lower.end(), filter_lower.begin(), ::tolower);
+				}
+				ImGui::Separator();
+				
+				for (const auto& asset_type : asset_types)
+				{
+					if (!filter_lower.empty())
+					{
+						std::string type_lower = asset_type;
+						std::transform(type_lower.begin(), type_lower.end(), type_lower.begin(), ::tolower);
+						if (type_lower.find(filter_lower) == std::string::npos)
+							continue;
+					}
+					
+					if (ImGui::Selectable(asset_type.c_str()))
+					{
+						dump_asset_type_ = asset_type;
+					}
+				}
+				ImGui::EndCombo();
 			}
-			if (ImGui::IsItemHovered())
+			ImGui::Text("Asset Name:");
+			ImGui::SetNextItemWidth(-1);
+			char asset_name_buf[256] = {};
+			const size_t asset_name_len = std::min(dump_asset_name_.size(), sizeof(asset_name_buf) - 1);
+			std::memcpy(asset_name_buf, dump_asset_name_.data(), asset_name_len);
+			asset_name_buf[asset_name_len] = '\0';
+			if (ImGui::InputText("##assetname", asset_name_buf, sizeof(asset_name_buf)))
 			{
-				ImGui::BeginTooltip();
-				if (current_mode == game::t7)
+				dump_asset_name_ = asset_name_buf;
+			}
+			ImGui::Spacing();
+			if (ImGui::Button("DUMP ASSET", ImVec2(-1, 28)))
+			{
+				if (!dump_asset_type_.empty() && !dump_asset_name_.empty())
 				{
-					ImGui::Text("Available in H1, IW7, T7.\nIterates through all .ff files in zone/ directory, loading and unloading each.");
+					commands::dump_asset(dump_asset_type_, dump_asset_name_);
+					operation_in_progress_ = true;
+					operation_status_text_ = "Dumping asset: " + dump_asset_type_ + " / " + dump_asset_name_;
 				}
-				else
-				{
-					ImGui::Text("Available in H1, IW7, T7.\nIterates through all .ff files in zone/ and zone/english/ directories, loading and unloading each.");
-				}
-				ImGui::EndTooltip();
 			}
 			ImGui::EndChild();
 			ImGui::EndGroup();
-			if (!iterate_zones_available)
-			{
-				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-				{
-					ImGui::BeginTooltip();
-					ImGui::Text("Not available in current game mode.\nAvailable in H1, IW7, T7.");
-					ImGui::EndTooltip();
-				}
-				ImGui::EndDisabled();
-			}
 
 			ImGui::SameLine(0, card_spacing);
 
 			const bool dump_matching_zones_available = (current_mode == game::h1 || current_mode == game::s1);
 			if (!dump_matching_zones_available) ImGui::BeginDisabled();
 			ImGui::BeginGroup();
-			ImGui::BeginChild("DumpMatchingZonesCard", ImVec2(card_width, 190), true);
+			ImGui::BeginChild("DumpMatchingZonesCard", ImVec2(card_width, card_height), true);
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
 			ImGui::Text("DUMP MATCHING ZONES");
 			ImGui::PopStyleColor();
@@ -977,11 +1258,49 @@ namespace gui
 			{
 				dump_matching_zones_pattern_ = pattern_buf;
 			}
-			if (ImGui::Button("DUMP MATCHING", ImVec2(-1, 32)))
+			ImGui::Text("Target Mode:");
+			ImGui::SetNextItemWidth(-1);
+			const char* target_modes_match[] = { "Current", "H1", "H2", "S1", "IW6", "IW7", "T7" };
+			int target_mode_idx_match = 0;
+			if (dump_target_mode_ != game::game_mode::none)
+			{
+				switch (dump_target_mode_)
+				{
+				case game::h1: target_mode_idx_match = 1; break;
+				case game::h2: target_mode_idx_match = 2; break;
+				case game::s1: target_mode_idx_match = 3; break;
+				case game::iw6: target_mode_idx_match = 4; break;
+				case game::iw7: target_mode_idx_match = 5; break;
+				case game::t7: target_mode_idx_match = 6; break;
+				default: target_mode_idx_match = 0; break;
+				}
+			}
+			if (ImGui::Combo("##targetmode_match", &target_mode_idx_match, target_modes_match, IM_ARRAYSIZE(target_modes_match)))
+			{
+				switch (target_mode_idx_match)
+				{
+				case 0: dump_target_mode_ = game::game_mode::none; break;
+				case 1: dump_target_mode_ = game::game_mode::h1; break;
+				case 2: dump_target_mode_ = game::game_mode::h2; break;
+				case 3: dump_target_mode_ = game::game_mode::s1; break;
+				case 4: dump_target_mode_ = game::game_mode::iw6; break;
+				case 5: dump_target_mode_ = game::game_mode::iw7; break;
+				case 6: dump_target_mode_ = game::game_mode::t7; break;
+				}
+			}
+			ImGui::Spacing();
+			if (ImGui::Button("DUMP MATCHING", ImVec2(-1, 28)))
 			{
 				if (!dump_matching_zones_pattern_.empty())
 				{
-					commands::dump_matching_zones(dump_matching_zones_pattern_);
+					std::optional<std::unordered_set<std::string>> asset_filter = {};
+					if (!selected_asset_types_.empty())
+					{
+						asset_filter = selected_asset_types_;
+					}
+					commands::dump_matching_zones(dump_matching_zones_pattern_, dump_target_mode_, asset_filter);
+					operation_in_progress_ = true;
+					operation_status_text_ = "Dumping matching zones: " + dump_matching_zones_pattern_;
 				}
 			}
 			if (ImGui::IsItemHovered())
@@ -1007,8 +1326,8 @@ namespace gui
 		{
 			const auto current_mode = game::get_mode();
 			const float build_window_width = ImGui::GetContentRegionAvail().x;
-			const float build_card_width = build_window_width - 40.0f; // Leave some margin
-			const float build_card_height = 120.0f; // More horizontal, less vertical
+			const float build_card_width = build_window_width - 40.0f;
+			const float build_card_height = 120.0f;
 			
 
 			ImGui::BeginChild("BuildCard", ImVec2(build_card_width, build_card_height), true);
@@ -1179,6 +1498,14 @@ namespace gui
 			ImGui::SameLine();
 			ImGui::Checkbox("Auto-scroll", &auto_scroll_log_);
 			ImGui::SameLine();
+			ImGui::Checkbox("Show Errors/Warnings Only", &filter_log_errors_warnings_);
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Filter log to show only ERROR and WARNING messages");
+				ImGui::EndTooltip();
+			}
+			ImGui::SameLine();
 			if (ImGui::Button("CLEAR"))
 			{
 				std::lock_guard<std::mutex> lock(log_mutex_);
@@ -1196,10 +1523,43 @@ namespace gui
 					messages_copy.assign(log_messages_.begin(), log_messages_.end());
 				}
 				
-				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.9f, 0.95f, 1.0f));
 				for (const auto& msg : messages_copy)
-					ImGui::TextUnformatted(msg.c_str());
-				ImGui::PopStyleColor();
+				{
+					if (filter_log_errors_warnings_)
+					{
+						if (msg.find("[ ERROR ]") == std::string::npos && 
+						    msg.find("[ FATAL ]") == std::string::npos && 
+						    msg.find("[ WARNING ]") == std::string::npos)
+						{
+							continue;
+						}
+					}
+					
+					if (msg.find("[ ERROR ]") != std::string::npos || msg.find("[ FATAL ]") != std::string::npos)
+					{
+						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+						ImGui::TextUnformatted(msg.c_str());
+						ImGui::PopStyleColor();
+					}
+					else if (msg.find("[ WARNING ]") != std::string::npos)
+					{
+						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.4f, 1.0f));
+						ImGui::TextUnformatted(msg.c_str());
+						ImGui::PopStyleColor();
+					}
+					else if (msg.find("[ INFO ]") != std::string::npos)
+					{
+						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+						ImGui::TextUnformatted(msg.c_str());
+						ImGui::PopStyleColor();
+					}
+					else
+					{
+						ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.9f, 0.95f, 1.0f));
+						ImGui::TextUnformatted(msg.c_str());
+						ImGui::PopStyleColor();
+					}
+				}
 				
 				if (auto_scroll_log_ && !messages_copy.empty())
 					ImGui::SetScrollHereY(1.0f);

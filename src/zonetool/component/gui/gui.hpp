@@ -11,6 +11,7 @@
 #include <mutex>
 #include <atomic>
 #include <chrono>
+#include <unordered_set>
 
 struct ID3D11Device;
 struct ID3D11DeviceContext;
@@ -88,7 +89,26 @@ namespace gui
 		std::deque<std::string> log_messages_;
 		std::mutex log_mutex_;
 		bool auto_scroll_log_;
+		bool filter_log_errors_warnings_;
 		std::string command_input_text_;
+
+		std::atomic<bool> operation_in_progress_;
+		std::string operation_status_text_;
+		std::mutex operation_status_mutex_;
+
+		std::unordered_set<std::string> selected_asset_types_;
+		std::string asset_filter_search_;
+
+		game::game_mode dump_target_mode_;
+
+		std::string dump_asset_type_;
+		std::string dump_asset_name_;
+
+		bool dump_map_skip_common_;
+
+		std::string fastfile_filter_;
+		std::string csv_filter_;
+		std::string map_zone_filter_;
 
 		UINT resize_width_;
 		UINT resize_height_;

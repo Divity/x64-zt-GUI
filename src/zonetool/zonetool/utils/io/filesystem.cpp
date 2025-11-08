@@ -312,6 +312,7 @@ namespace zonetool
 			search_paths.clear();
 			search_paths.emplace_back("zonetool\\" + ff + "\\");
 			search_paths.emplace_back("zonetool\\");
+			search_paths.emplace_back("dump\\");
 			add_paths_from_directory("zonetool_paths");
 
 			fastfile = ff;

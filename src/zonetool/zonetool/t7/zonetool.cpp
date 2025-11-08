@@ -144,7 +144,7 @@ namespace zonetool::t7
 		}
 		catch (const std::exception& e)
 		{
-			ZONETOOL_FATAL("A fatal exception occured while dumping zone \"%s\", exception was: \n%s",
+			ZONETOOL_ERROR_RECOVERABLE("An exception occurred while dumping zone \"%s\": %s",
 				filesystem::get_fastfile().data(), e.what());
 		}
 
@@ -187,7 +187,7 @@ namespace zonetool::t7
 		}
 		catch (const std::exception& e)
 		{
-			ZONETOOL_FATAL("A fatal exception occured while dumping zone \"%s\", exception was: \n%s",
+			ZONETOOL_ERROR_RECOVERABLE("An exception occurred while dumping zone \"%s\": %s",
 				filesystem::get_fastfile().data(), e.what());
 		}
 
@@ -213,7 +213,7 @@ namespace zonetool::t7
 		}
 		catch (const std::exception& e)
 		{
-			ZONETOOL_FATAL("A fatal exception occured while dumping zone \"%s\", exception was: \n%s",
+			ZONETOOL_ERROR_RECOVERABLE("An exception occurred while dumping zone \"%s\": %s",
 				filesystem::get_fastfile().data(), e.what());
 		}
 

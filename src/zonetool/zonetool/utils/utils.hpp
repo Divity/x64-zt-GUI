@@ -44,6 +44,10 @@ namespace nlohmann
 #define ZONETOOL_ERROR(__FMT__, ...) \
 	printf("[ ERROR ][ %s ]: " __FMT__ "\n", zonetool::strip_template(__FUNCTION__), __VA_ARGS__)
 
+#define ZONETOOL_ERROR_RECOVERABLE(__FMT__, ...) \
+	printf("[ ERROR ][ %s ]: " __FMT__ "\n", zonetool::strip_template(__FUNCTION__), __VA_ARGS__); \
+	MessageBoxA(nullptr, &utils::string::va("An error occurred during operation:\n\n" __FMT__ "\n\nThe operation will continue but may be incomplete.", __VA_ARGS__)[0], "ZoneTool Error", MB_ICONWARNING | MB_OK)
+
 #define ZONETOOL_FATAL(__FMT__, ...) \
 	printf("[ FATAL ][ %s ]: " __FMT__ "\n", zonetool::strip_template(__FUNCTION__), __VA_ARGS__); \
 	MessageBoxA(nullptr, &utils::string::va("Oops! An unexpected error occured. Error was: \n" __FMT__ "\n\nZoneTool must be restarted to resolve the error. Last error code reported by windows: 0x%08X (%u)", __VA_ARGS__, GetLastError(), GetLastError())[0], nullptr, MB_ICONERROR); \
