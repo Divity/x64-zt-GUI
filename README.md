@@ -3,7 +3,24 @@ A fastfile unlinker and linker for various x64 Call of Duty titles.
 
 - If you are interested in porting maps or assets from IW3/4/5, check <b>[Aurora's Map Porting IW3/4/5 -> H1](https://docs.auroramod.dev/map-porting-iw5)</b>
 - If you are interested in porting maps or assets from newer Call of Duty games like H1, S1, H1, H2, or IW7, between each other, check <b>[Aurora's Map Porting (S1 <-> H1 <-> H2)](https://docs.auroramod.dev/map-porting-s1)</b>
-<img width="1179" height="783" alt="image" src="https://github.com/user-attachments/assets/49f82b3a-f331-4326-9524-1d41549f2d0a" /><img width="1180" height="778" alt="image" src="https://github.com/user-attachments/assets/8949c173-45d0-436f-8581-d21de39d6479" />
+
+
+## Gui 
+
+- Dump Tab
+<img width="1188" height="789" alt="image" src="https://github.com/user-attachments/assets/c4b9d374-f560-466e-b422-e59a5b4094bf" />
+
+- Build Tab
+<img width="1185" height="793" alt="image" src="https://github.com/user-attachments/assets/31432116-a505-4397-ba99-51988394098f" />
+
+
+- Condole Tab
+<img width="1177" height="794" alt="image" src="https://github.com/user-attachments/assets/1abfc4fa-1298-4be4-ae32-5fa22877f863" />
+
+
+(errors only)<img width="1183" height="796" alt="image" src="https://github.com/user-attachments/assets/0a4ceea8-c41d-4376-bbaf-23282adb3917" />
+
+
 
 
 ## Supported Games
