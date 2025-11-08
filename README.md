@@ -6,6 +6,7 @@ A fastfile unlinker and linker for various x64 Call of Duty titles.
 
 
 ## Gui 
+Imgui Based Gui utilizing MicaBlur for the background 
 
 - Dump Tab
 <img width="1188" height="789" alt="image" src="https://github.com/user-attachments/assets/c4b9d374-f560-466e-b422-e59a5b4094bf" />
