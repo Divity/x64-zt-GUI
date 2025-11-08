@@ -98,6 +98,9 @@ namespace gui
 		, file_watcher_running_(false)
 		, resize_width_(0)
 		, resize_height_(0)
+		, batch_dump_in_progress_(false)
+		, batch_dump_current_(0)
+		, batch_dump_total_(0)
 		, swap_chain_occluded_(false)
 	{
 		g_gui_component = this;
@@ -105,6 +108,10 @@ namespace gui
 
 	component::~component()
 	{
+		if (batch_dump_thread_.joinable())
+		{
+			batch_dump_thread_.join();
+		}
 		if (g_gui_component == this)
 		{
 			g_gui_component = nullptr;
@@ -779,14 +786,62 @@ namespace gui
 			std::memcpy(fastfile_filter_buf, fastfile_filter_.data(), fastfile_filter_len);
 			fastfile_filter_buf[fastfile_filter_len] = '\0';
 			
-			if (ImGui::BeginCombo("##fastfile", selected_fastfile_ >= 0 ? fastfiles_[selected_fastfile_].data() : "Select..."))
+			std::string fastfile_preview = "Select...";
 			{
-				ImGui::SetNextItemWidth(-1);
+				std::lock_guard<std::mutex> lock(selected_fastfiles_batch_mutex_);
+				if (!selected_fastfiles_batch_.empty())
+				{
+					fastfile_preview = std::to_string(selected_fastfiles_batch_.size()) + " selected";
+				}
+				else if (selected_fastfile_ >= 0)
+				{
+					std::lock_guard<std::mutex> lock_ff(fastfiles_mutex_);
+					if (static_cast<size_t>(selected_fastfile_) < fastfiles_.size())
+					{
+						fastfile_preview = fastfiles_[selected_fastfile_];
+					}
+				}
+			}
+			
+			const float combo_button_width = ImGui::CalcItemWidth();
+			if (ImGui::BeginCombo("##fastfile", fastfile_preview.c_str()))
+			{
+				ImGui::SetNextItemWidth(combo_button_width);
 				if (ImGui::InputText("##fastfile_filter", fastfile_filter_buf, sizeof(fastfile_filter_buf), ImGuiInputTextFlags_AutoSelectAll))
 				{
 					fastfile_filter_ = fastfile_filter_buf;
 				}
 				ImGui::Separator();
+				
+				float button_width = (combo_button_width - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+				if (ImGui::Button("Select All", ImVec2(button_width, 0)))
+				{
+					std::lock_guard<std::mutex> lock_ff(fastfiles_mutex_);
+					std::lock_guard<std::mutex> lock(selected_fastfiles_batch_mutex_);
+					std::string filter_lower = fastfile_filter_;
+					std::transform(filter_lower.begin(), filter_lower.end(), filter_lower.begin(), ::tolower);
+					for (size_t i = 0; i < fastfiles_.size(); ++i)
+					{
+						if (!filter_lower.empty())
+						{
+							std::string item_lower = fastfiles_[i];
+							std::transform(item_lower.begin(), item_lower.end(), item_lower.begin(), ::tolower);
+							if (item_lower.find(filter_lower) == std::string::npos)
+								continue;
+						}
+						selected_fastfiles_batch_.insert(i);
+					}
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Clear All", ImVec2(button_width, 0)))
+				{
+					std::lock_guard<std::mutex> lock(selected_fastfiles_batch_mutex_);
+					selected_fastfiles_batch_.clear();
+					selected_fastfile_ = -1;
+				}
+				ImGui::Separator();
+				
+				ImGui::BeginChild("FastfileList", ImVec2(combo_button_width, 200), true);
 				
 				std::lock_guard<std::mutex> lock(fastfiles_mutex_);
 				const size_t size = fastfiles_.size();
@@ -803,15 +858,26 @@ namespace gui
 							continue;
 					}
 					
-					const bool is_selected = (selected_fastfile_ == static_cast<int>(i));
-					if (ImGui::Selectable(fastfiles_[i].data(), is_selected))
+					std::lock_guard<std::mutex> lock_batch(selected_fastfiles_batch_mutex_);
+					bool is_selected_batch = selected_fastfiles_batch_.find(i) != selected_fastfiles_batch_.end();
+					
+					if (ImGui::Checkbox(fastfiles_[i].data(), &is_selected_batch))
 					{
-						selected_fastfile_ = static_cast<int>(i);
-						fastfile_filter_.clear();
+						if (is_selected_batch)
+						{
+							selected_fastfiles_batch_.insert(i);
+						}
+						else
+						{
+							selected_fastfiles_batch_.erase(i);
+							if (selected_fastfile_ == static_cast<int>(i))
+							{
+								selected_fastfile_ = -1;
+							}
+						}
 					}
-					if (is_selected)
-						ImGui::SetItemDefaultFocus();
 				}
+				ImGui::EndChild();
 				ImGui::EndCombo();
 			}
 			else
@@ -917,9 +983,87 @@ namespace gui
 			
 			ImGui::Spacing();
 			
-			if (ImGui::Button("DUMP SELECTED ZONE", ImVec2(-1, 28)))
+			bool has_batch_selection = false;
 			{
-				if (selected_fastfile_ >= 0)
+				std::lock_guard<std::mutex> lock(selected_fastfiles_batch_mutex_);
+				has_batch_selection = !selected_fastfiles_batch_.empty();
+			}
+			
+			if (has_batch_selection && !batch_dump_in_progress_)
+			{
+				if (ImGui::Button("DUMP SELECTED ZONES", ImVec2(-1, 28)))
+				{
+					std::lock_guard<std::mutex> lock_batch(selected_fastfiles_batch_mutex_);
+					std::lock_guard<std::mutex> lock_ff(fastfiles_mutex_);
+					
+					std::vector<size_t> zones_to_dump;
+					for (const auto& idx : selected_fastfiles_batch_)
+					{
+						if (idx < fastfiles_.size())
+						{
+							zones_to_dump.push_back(idx);
+						}
+					}
+					
+					if (!zones_to_dump.empty())
+					{
+						std::vector<std::string> zone_names;
+						for (const auto& idx : zones_to_dump)
+						{
+							if (idx < fastfiles_.size())
+							{
+								zone_names.push_back(fastfiles_[idx]);
+							}
+						}
+						
+						if (!zone_names.empty())
+						{
+							batch_dump_total_ = zone_names.size();
+							batch_dump_current_ = 0;
+							batch_dump_in_progress_ = true;
+							
+							std::optional<std::unordered_set<std::string>> asset_filter = {};
+							if (!selected_asset_types_.empty())
+							{
+								asset_filter = selected_asset_types_;
+							}
+							
+							auto batch_target_mode = dump_target_mode_;
+							
+							batch_dump_thread_ = std::thread([this, zone_names, asset_filter, batch_target_mode]()
+							{
+								for (size_t i = 0; i < zone_names.size(); ++i)
+								{
+									batch_dump_current_ = i + 1;
+									{
+										std::lock_guard<std::mutex> lock_status(batch_dump_mutex_);
+										batch_dump_current_zone_ = zone_names[i];
+									}
+									
+									{
+										std::lock_guard<std::mutex> lock_status(operation_status_mutex_);
+										operation_status_text_ = "Batch dumping: " + std::to_string(i + 1) + "/" + std::to_string(zone_names.size()) + " - " + zone_names[i];
+										operation_in_progress_ = true;
+									}
+									
+									commands::dump_zone(zone_names[i], batch_target_mode, asset_filter);
+								}
+								
+								batch_dump_in_progress_ = false;
+								operation_in_progress_ = false;
+								{
+									std::lock_guard<std::mutex> lock_status(operation_status_mutex_);
+									operation_status_text_ = "Batch dump complete: " + std::to_string(zone_names.size()) + " zones dumped";
+								}
+							});
+							batch_dump_thread_.detach();
+						}
+					}
+				}
+			}
+			else if (selected_fastfile_ >= 0 && !batch_dump_in_progress_)
+			{
+				if (ImGui::Button("DUMP SELECTED ZONE", ImVec2(-1, 28)))
 				{
 					std::lock_guard<std::mutex> lock(fastfiles_mutex_);
 					const size_t size = fastfiles_.size();
@@ -935,6 +1079,28 @@ namespace gui
 						operation_status_text_ = "Dumping zone: " + fastfiles_[selected_fastfile_];
 					}
 				}
+			}
+			else if (batch_dump_in_progress_)
+			{
+				ImGui::BeginDisabled();
+				std::string batch_status;
+				{
+					std::lock_guard<std::mutex> lock(batch_dump_mutex_);
+					batch_status = "DUMPING: " + std::to_string(batch_dump_current_.load()) + "/" + std::to_string(batch_dump_total_.load());
+					if (!batch_dump_current_zone_.empty())
+					{
+						batch_status += " - " + batch_dump_current_zone_;
+					}
+				}
+				ImGui::Button(batch_status.c_str(), ImVec2(-1, 28));
+				ImGui::EndDisabled();
+				
+				float progress = 0.0f;
+				if (batch_dump_total_ > 0)
+				{
+					progress = static_cast<float>(batch_dump_current_) / static_cast<float>(batch_dump_total_);
+				}
+				ImGui::ProgressBar(progress, ImVec2(-1, 0));
 			}
 			ImGui::EndChild();
 			ImGui::EndGroup();
@@ -959,8 +1125,16 @@ namespace gui
 						commands::load_zone(fastfiles_[selected_fastfile_]);
 				}
 			}
-			if (ImGui::Button("UNLOAD ZONES", ImVec2(-1, 28)))
+			if (ImGui::Button("UNLOAD ALL ZONES", ImVec2(-1, 28)))
+			{
 				commands::unload_zones();
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Unloads all zones including default zones\nloaded at startup (common, code_post_gfx, etc.)");
+				ImGui::EndTooltip();
+			}
 			if (ImGui::Button("VERIFY ZONE", ImVec2(-1, 28)))
 			{
 				if (selected_fastfile_ >= 0)

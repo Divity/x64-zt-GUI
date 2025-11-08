@@ -146,25 +146,25 @@ namespace zonetool::h2
 		}
 	}
 
-	class component final : public component_interface
-	{
-	public:
-		void post_unpack() override
+		class component final : public component_interface
 		{
-			// Fix startup crashes
-			utils::hook::set(0x140633080, 0xC301B0);
-			utils::hook::set(0x140272F70, 0xC301B0);
-			utils::hook::jump(0x140046148, sub_46148, true);
+		public:
+			void post_unpack() override
+			{
+				// Fix startup crashes
+				utils::hook::set(0x140633080, 0xC301B0);
+				utils::hook::set(0x140272F70, 0xC301B0);
+				utils::hook::jump(0x140046148, sub_46148, true);
 
-			utils::hook::jump(0x14064EF10, quit_stub, true);
+				utils::hook::jump(0x14064EF10, quit_stub, true);
 
-			// Disable battle net popup
-			utils::hook::nop(0x1405F4496, 5);
+				// Disable battle net popup
+				utils::hook::nop(0x1405F4496, 5);
 
-			remove_renderer();
+				remove_renderer();
 
-			// stop the game after loading common zones
-			utils::hook::call(0x14074E22A, load_common_zones_stub);
+				// stop the game after loading common zones
+				utils::hook::call(0x14074E22A, load_common_zones_stub);
 
 			// disable splash
 			utils::hook::set<uint8_t>(0x140650780, 0xC3);

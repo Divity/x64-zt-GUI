@@ -269,6 +269,11 @@ namespace zonetool::iw7
 
 	void dump_asset(XAsset* asset)
 	{
+		if (!asset || !asset->header.data)
+		{
+			return;
+		}
+
 		if (globals.verify)
 		{
 			ZONETOOL_INFO("Loading asset \"%s\" of type %s.", get_asset_name(asset), type_to_string(asset->type));
@@ -476,8 +481,43 @@ namespace zonetool::iw7
 
 	void unload_zones()
 	{
+		ZONETOOL_INFO("Unloading all zones (including default zones)...");
+		
+		if (globals.dump || globals.dump_csv || globals.verify)
+		{
+			ZONETOOL_WARNING("Stopping active dump/verify operation before unloading zones...");
+			stop_dumping();
+			globals.verify = false;
+			globals.dump = false;
+			globals.dump_csv = false;
+		}
+		
+		referenced_assets.clear();
+		ignore_assets.clear();
+		
+		wait_for_database();
+		
+		ZONETOOL_INFO("Unloading custom zones...");
 		DB_UnloadFastfilesByZoneFlags(DB_ZONE_CUSTOM);
-		ZONETOOL_INFO("Unloaded loaded zones...");
+		wait_for_database();
+		
+		for (int i = 0; i < 10; i++)
+		{
+			Sleep(100);
+			wait_for_database();
+		}
+		
+		ZONETOOL_INFO("Unloading permanent zones...");
+		DB_UnloadFastfilesByZoneFlags(DB_ZONE_PERMANENT);
+		wait_for_database();
+		
+		for (int i = 0; i < 30; i++)
+		{
+			Sleep(100);
+			wait_for_database();
+		}
+		
+		ZONETOOL_INFO("Unloaded all zones (including default zones)...");
 	}
 
 	void dump_zone(const std::string& name, const game::game_mode target, const std::optional<std::string> fastfile = {})

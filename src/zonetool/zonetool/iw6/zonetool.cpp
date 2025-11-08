@@ -584,7 +584,7 @@ namespace zonetool::iw6
 		static XZoneInfo zone = {0, DB_ZONE_NONE, 70};
 		DB_LoadXAssets(&zone, 1, DB_LOAD_ASYNC_FORCE_FREE);
 
-		ZONETOOL_INFO("Unloaded zones...");
+		ZONETOOL_INFO("Unloaded all zones (including default zones)...");
 	}
 
 	static dump_params get_dump_params_from_args(const std::vector<std::string>& args, std::size_t start_index)

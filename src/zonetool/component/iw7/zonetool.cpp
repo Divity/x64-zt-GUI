@@ -162,7 +162,7 @@ namespace iw7
 			::zonetool::iw7::XZoneInfo zone{};
 			zone.name = "code_pre_gfx";
 			zone.allocFlags = ::zonetool::iw7::DB_ZONE_PERMANENT;
-			return ::zonetool::iw7::DB_LoadXAssets(&zone, 1, ::zonetool::iw7::DB_LOAD_SYNC);
+			::zonetool::iw7::DB_LoadXAssets(&zone, 1, ::zonetool::iw7::DB_LOAD_SYNC);
 		}
 
 		void load_common_zones()
@@ -177,6 +177,11 @@ namespace iw7
 				defaultzones.push_back("common");
 			}
 
+			if (defaultzones.empty())
+			{
+				return;
+			}
+
 			::zonetool::iw7::XZoneInfo zones[8]{ 0 };
 
 			// Load our custom zones
@@ -186,7 +191,7 @@ namespace iw7
 				zones[i].allocFlags = ::zonetool::iw7::DB_ZONE_PERMANENT;
 			}
 
-			return ::zonetool::iw7::DB_LoadXAssets(zones, static_cast<unsigned int>(defaultzones.size()), ::zonetool::iw7::DB_LOAD_SYNC);
+			::zonetool::iw7::DB_LoadXAssets(zones, static_cast<unsigned int>(defaultzones.size()), ::zonetool::iw7::DB_LOAD_SYNC);
 		}
 
 		void load_init_zones_stub()

@@ -454,7 +454,7 @@ namespace zonetool::t7
 			zone_name--;
 		}
 		
-		ZONETOOL_INFO("Unloaded loaded zones...");
+		ZONETOOL_INFO("Unloaded all zones (including default zones)...");
 	}
 
 	void dump_zone(const std::string& name, const game::game_mode target, const std::optional<std::string> fastfile = {})

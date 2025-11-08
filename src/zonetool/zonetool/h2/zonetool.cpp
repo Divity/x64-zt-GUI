@@ -476,7 +476,7 @@ namespace zonetool::h2
 		static XZoneInfo zone = {0, DB_ZONE_NONE, 70};
 		DB_LoadXAssets(&zone, 1, DB_LOAD_ASYNC_FORCE_FREE);
 
-		ZONETOOL_INFO("Unloaded zones...");
+		ZONETOOL_INFO("Unloaded all zones (including default zones)...");
 	}
 
 	void dump_zone(const std::string& name, const game::game_mode target, const std::optional<std::string> fastfile = {})

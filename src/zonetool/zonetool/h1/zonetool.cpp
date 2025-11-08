@@ -698,11 +698,11 @@ namespace zonetool::h1
 
 	void unload_zones()
 	{
-		static XZoneInfo zone = {0, DB_ZONE_CUSTOM, 70};
+		static XZoneInfo zone = {0, DB_ZONE_NONE, 70};
 		DB_LoadXAssets(&zone, 1, DB_LOAD_ASYNC_FORCE_FREE);
 		wait_for_database();
 
-		ZONETOOL_INFO("Unloaded loaded zones...");
+		ZONETOOL_INFO("Unloaded all zones (including default zones)...");
 	}
 
 	void dump_zone(const std::string& name, const game::game_mode target, const std::optional<std::string> fastfile = {})

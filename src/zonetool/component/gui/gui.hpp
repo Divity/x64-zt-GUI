@@ -70,6 +70,15 @@ namespace gui
 		std::vector<std::string> fastfiles_;
 		std::mutex fastfiles_mutex_;
 		int selected_fastfile_;
+		std::unordered_set<size_t> selected_fastfiles_batch_;
+		std::mutex selected_fastfiles_batch_mutex_;
+		
+		std::atomic<bool> batch_dump_in_progress_;
+		std::atomic<size_t> batch_dump_current_;
+		std::atomic<size_t> batch_dump_total_;
+		std::string batch_dump_current_zone_;
+		std::mutex batch_dump_mutex_;
+		std::thread batch_dump_thread_;
 
 		std::vector<std::string> map_zones_;
 		std::mutex map_zones_mutex_;
