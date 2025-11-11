@@ -21,6 +21,9 @@ Imgui Based Gui utilizing MicaBlur for the background
 
 (errors only)<img width="1183" height="796" alt="image" src="https://github.com/user-attachments/assets/0a4ceea8-c41d-4376-bbaf-23282adb3917" />
 
+- CSV Editor
+
+<img width="1188" height="779" alt="image" src="https://github.com/user-attachments/assets/b91f893c-853e-4149-8a54-956cae68afe3" />
 
 
 
