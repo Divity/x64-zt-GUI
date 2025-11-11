@@ -52,6 +52,9 @@ namespace gui
 		void refresh_map_zones();
 		void refresh_csv_files();
 		void refresh_zonetool_maps();
+		void load_csv_file(const std::string& filename);
+		void save_csv_file();
+		void check_csv_file_external_changes();
 
 		static LRESULT WINAPI wnd_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
@@ -126,6 +129,17 @@ namespace gui
 		std::thread file_watcher_thread_;
 		std::atomic<bool> file_watcher_running_;
 		std::chrono::steady_clock::time_point last_file_check_;
+
+		int selected_csv_editor_file_;
+		std::string csv_editor_content_;
+		std::string csv_editor_current_file_;
+		std::mutex csv_editor_mutex_;
+		std::atomic<bool> csv_editor_has_unsaved_changes_;
+		std::atomic<bool> csv_editor_saving_;
+		std::chrono::steady_clock::time_point csv_editor_last_edit_;
+		std::filesystem::file_time_type csv_editor_file_mtime_;
+		bool csv_editor_show_create_dialog_;
+		char csv_editor_new_file_name_[256];
 
 	public:
 		void add_log_message(const std::string& message);

@@ -19,7 +19,6 @@ namespace gui
 		void build_zone(const std::string& zone);
 		void dump_csv(const std::string& zone);
 		void generate_csv(const std::string& map, bool is_sp = false);
-		void iterate_zones();
 		void dump_matching_zones(const std::string& pattern, const game::game_mode target = game::game_mode::none, const std::optional<std::unordered_set<std::string>>& asset_filter = {});
 		void build_xmodel(const std::string& name);
 

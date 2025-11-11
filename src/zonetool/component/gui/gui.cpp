@@ -29,6 +29,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
+#include <vector>
 #include <shlobj.h>
 #include <dwmapi.h>
 
@@ -102,6 +103,12 @@ namespace gui
 		, batch_dump_current_(0)
 		, batch_dump_total_(0)
 		, swap_chain_occluded_(false)
+		, selected_csv_editor_file_(-1)
+		, csv_editor_content_("")
+		, csv_editor_current_file_("")
+		, csv_editor_has_unsaved_changes_(false)
+		, csv_editor_saving_(false)
+		, csv_editor_show_create_dialog_(false)
 	{
 		g_gui_component = this;
 	}
@@ -115,6 +122,10 @@ namespace gui
 		if (g_gui_component == this)
 		{
 			g_gui_component = nullptr;
+		}
+		if (csv_editor_has_unsaved_changes_ && !csv_editor_current_file_.empty())
+		{
+			save_csv_file();
 		}
 		file_watcher_running_ = false;
 		if (file_watcher_thread_.joinable())
@@ -729,18 +740,50 @@ namespace gui
 		ImGui::Spacing();
 
 		static int active_tab = 0;
-		const float tab_width = 200.0f + 150.0f + 150.0f + 8.0f;
+		const float tab_width = 200.0f + 150.0f + 150.0f + 150.0f + 150.0f + 8.0f;
 		const float tab_window_width = ImGui::GetContentRegionAvail().x;
 		const float tab_center_offset = (tab_window_width - tab_width) / 2.0f;
 		if (tab_center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + tab_center_offset);
 		
 		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(20, 10));
 		ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 0));
-		if (ImGui::Button("DUMP", ImVec2(200, 0))) active_tab = 0;
+		if (ImGui::Button("DUMP", ImVec2(200, 0)))
+		{
+			if (active_tab == 2 && csv_editor_has_unsaved_changes_ && !csv_editor_current_file_.empty())
+			{
+				save_csv_file();
+			}
+			active_tab = 0;
+		}
 		ImGui::SameLine();
-		if (ImGui::Button("BUILD", ImVec2(150, 0))) active_tab = 1;
+		if (ImGui::Button("BUILD", ImVec2(150, 0)))
+		{
+			if (active_tab == 2 && csv_editor_has_unsaved_changes_ && !csv_editor_current_file_.empty())
+			{
+				save_csv_file();
+			}
+			active_tab = 1;
+		}
 		ImGui::SameLine();
-		if (ImGui::Button("CONSOLE", ImVec2(150, 0))) active_tab = 2;
+		if (ImGui::Button("CSV EDITOR", ImVec2(150, 0))) active_tab = 2;
+		ImGui::SameLine();
+		if (ImGui::Button("IO", ImVec2(150, 0)))
+		{
+			if (active_tab == 2 && csv_editor_has_unsaved_changes_ && !csv_editor_current_file_.empty())
+			{
+				save_csv_file();
+			}
+			active_tab = 3;
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("CONSOLE", ImVec2(150, 0)))
+		{
+			if (active_tab == 2 && csv_editor_has_unsaved_changes_ && !csv_editor_current_file_.empty())
+			{
+				save_csv_file();
+			}
+			active_tab = 4;
+		}
 		ImGui::PopStyleVar(2);
 
 		ImGui::Spacing();
@@ -1146,26 +1189,6 @@ namespace gui
 				}
 			}
 			ImGui::Spacing();
-			const bool iterate_zones_available = (current_mode == game::h1 || current_mode == game::iw7 || current_mode == game::t7);
-			if (!iterate_zones_available) ImGui::BeginDisabled();
-			if (ImGui::Button("ITERATE ZONES", ImVec2(-1, 28)))
-			{
-				commands::iterate_zones();
-			}
-			if (ImGui::IsItemHovered())
-			{
-				ImGui::BeginTooltip();
-				if (current_mode == game::t7)
-				{
-					ImGui::Text("Available in H1, IW7, T7.\nIterates through all .ff files in zone/ directory, loading and unloading each.");
-				}
-				else
-				{
-					ImGui::Text("Available in H1, IW7, T7.\nIterates through all .ff files in zone/ and zone/english/ directories, loading and unloading each.");
-				}
-				ImGui::EndTooltip();
-			}
-			if (!iterate_zones_available) ImGui::EndDisabled();
 			ImGui::EndChild();
 			ImGui::EndGroup();
 
@@ -1665,6 +1688,283 @@ namespace gui
 		}
 		else if (active_tab == 2)
 		{
+			check_csv_file_external_changes();
+
+			ImGui::BeginChild("CsvEditorCard", ImVec2(0, 0), true);
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
+			ImGui::Text("CSV EDITOR");
+			ImGui::PopStyleColor();
+			ImGui::SameLine();
+			
+			if (csv_editor_saving_)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+				ImGui::Text("Saving...");
+				ImGui::PopStyleColor();
+			}
+			else if (csv_editor_has_unsaved_changes_)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.4f, 1.0f));
+				ImGui::Text("Unsaved changes");
+				ImGui::PopStyleColor();
+			}
+			else if (!csv_editor_current_file_.empty())
+			{
+				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 1.0f, 0.4f, 1.0f));
+				ImGui::Text("Saved");
+				ImGui::PopStyleColor();
+			}
+
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			ImGui::Text("CSV File:");
+			ImGui::BeginGroup();
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 35.0f);
+			std::lock_guard<std::mutex> lock(csv_files_mutex_);
+			if (ImGui::BeginCombo("##csv_editor_file", selected_csv_editor_file_ >= 0 && static_cast<size_t>(selected_csv_editor_file_) < csv_files_.size() ? csv_files_[selected_csv_editor_file_].data() : "Select CSV..."))
+			{
+				const size_t size = csv_files_.size();
+				for (size_t i = 0; i < size; ++i)
+				{
+					const bool is_selected = (selected_csv_editor_file_ == static_cast<int>(i));
+					if (ImGui::Selectable(csv_files_[i].data(), is_selected))
+					{
+						if (csv_editor_has_unsaved_changes_ && !csv_editor_current_file_.empty())
+						{
+							save_csv_file();
+						}
+						selected_csv_editor_file_ = static_cast<int>(i);
+						load_csv_file(csv_files_[i]);
+					}
+					if (is_selected)
+						ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("+", ImVec2(30, 0)))
+			{
+				csv_editor_show_create_dialog_ = true;
+				std::memset(csv_editor_new_file_name_, 0, sizeof(csv_editor_new_file_name_));
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Create new CSV file");
+				ImGui::EndTooltip();
+			}
+			ImGui::EndGroup();
+
+			ImGui::Spacing();
+
+			if (!csv_editor_current_file_.empty())
+			{
+				const std::string file_path = "zone_source\\" + csv_editor_current_file_ + ".csv";
+				const size_t file_size = utils::io::file_size(file_path);
+				ImGui::Text("File: %s", file_path.c_str());
+				ImGui::Text("Size: %zu bytes", file_size);
+			}
+
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			if (!csv_editor_current_file_.empty())
+			{
+				std::lock_guard<std::mutex> lock_editor(csv_editor_mutex_);
+				const size_t current_size = csv_editor_content_.size();
+				const size_t buffer_size = std::max(current_size + 1, size_t(65536));
+				std::vector<char> buffer(buffer_size);
+				std::memcpy(buffer.data(), csv_editor_content_.data(), current_size);
+				buffer[current_size] = '\0';
+
+				if (ImGui::InputTextMultiline("##csv_content", buffer.data(), buffer_size, ImVec2(-1, -60), ImGuiInputTextFlags_AllowTabInput))
+				{
+					csv_editor_content_ = buffer.data();
+					csv_editor_has_unsaved_changes_ = true;
+					csv_editor_last_edit_ = std::chrono::steady_clock::now();
+				}
+
+				const auto now = std::chrono::steady_clock::now();
+				const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - csv_editor_last_edit_).count();
+				if (csv_editor_has_unsaved_changes_ && elapsed >= 1500 && !csv_editor_saving_)
+				{
+					save_csv_file();
+				}
+			}
+			else
+			{
+				ImGui::Text("Select a CSV file to edit");
+			}
+
+			if (csv_editor_show_create_dialog_)
+			{
+				ImGui::OpenPopup("Create New CSV");
+				csv_editor_show_create_dialog_ = false;
+			}
+
+			if (ImGui::BeginPopupModal("Create New CSV", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+			{
+				ImGui::Text("Enter CSV file name (without .csv extension):");
+				ImGui::Spacing();
+				ImGui::SetNextItemWidth(300.0f);
+				ImGui::InputText("##new_csv_name", csv_editor_new_file_name_, sizeof(csv_editor_new_file_name_));
+				ImGui::Spacing();
+
+				if (ImGui::Button("Create", ImVec2(100, 0)))
+				{
+					std::string new_file_name = csv_editor_new_file_name_;
+					if (!new_file_name.empty())
+					{
+						const std::string file_path = "zone_source\\" + new_file_name + ".csv";
+						
+						if (!utils::io::file_exists(file_path))
+						{
+							try
+							{
+								if (utils::io::write_file(file_path, "", false))
+								{
+									refresh_csv_files();
+									
+									std::lock_guard<std::mutex> lock_files(csv_files_mutex_);
+									const size_t size = csv_files_.size();
+									for (size_t i = 0; i < size; ++i)
+									{
+										if (csv_files_[i] == new_file_name)
+										{
+											selected_csv_editor_file_ = static_cast<int>(i);
+											
+											std::lock_guard<std::mutex> lock_editor(csv_editor_mutex_);
+											csv_editor_current_file_ = new_file_name;
+											csv_editor_content_ = "";
+											csv_editor_has_unsaved_changes_ = false;
+											csv_editor_saving_ = false;
+											try
+											{
+												csv_editor_file_mtime_ = std::filesystem::last_write_time(file_path);
+											}
+											catch (...)
+											{
+												csv_editor_file_mtime_ = std::filesystem::file_time_type::min();
+											}
+											break;
+										}
+									}
+								}
+							}
+							catch (...)
+							{
+							}
+						}
+					}
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::SameLine();
+				if (ImGui::Button("Cancel", ImVec2(100, 0)))
+				{
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::EndPopup();
+			}
+
+			ImGui::EndChild();
+		}
+		else if (active_tab == 3)
+		{
+			ImGui::BeginChild("IOCard", ImVec2(0, 0), true);
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
+			ImGui::Text("IO OPERATIONS");
+			ImGui::PopStyleColor();
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			const float button_width = 300.0f;
+			const float button_height = 40.0f;
+			const float io_window_width = ImGui::GetContentRegionAvail().x;
+			const float io_center_offset = (io_window_width - button_width) / 2.0f;
+			if (io_center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + io_center_offset);
+
+			if (ImGui::Button("OPEN DUMP FOLDER", ImVec2(button_width, button_height)))
+			{
+				if (utils::io::directory_exists("dump"))
+				{
+					::ShellExecuteA(nullptr, "open", "dump", nullptr, nullptr, SW_SHOWDEFAULT);
+				}
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Opens the dump/ directory in Windows Explorer");
+				ImGui::EndTooltip();
+			}
+
+			ImGui::Spacing();
+
+			if (io_center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + io_center_offset);
+			if (ImGui::Button("OPEN ZONE SOURCE FOLDER", ImVec2(button_width, button_height)))
+			{
+				if (utils::io::directory_exists("zone_source"))
+				{
+					::ShellExecuteA(nullptr, "open", "zone_source", nullptr, nullptr, SW_SHOWDEFAULT);
+				}
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Opens the zone_source/ directory in Windows Explorer");
+				ImGui::EndTooltip();
+			}
+
+			ImGui::Spacing();
+
+			if (io_center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + io_center_offset);
+			if (ImGui::Button("OPEN ZONE FOLDER", ImVec2(button_width, button_height)))
+			{
+				if (utils::io::directory_exists("zone"))
+				{
+					::ShellExecuteA(nullptr, "open", "zone", nullptr, nullptr, SW_SHOWDEFAULT);
+				}
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Opens the zone/ directory in Windows Explorer");
+				ImGui::EndTooltip();
+			}
+
+			ImGui::Spacing();
+
+			if (io_center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + io_center_offset);
+			if (ImGui::Button("OPEN ZONETOOL FOLDER", ImVec2(button_width, button_height)))
+			{
+				if (utils::io::directory_exists("zonetool"))
+				{
+					char full_path[MAX_PATH];
+					if (::GetFullPathNameA("zonetool", MAX_PATH, full_path, nullptr) > 0)
+					{
+						std::string dir_path = full_path;
+						if (dir_path.back() != '\\' && dir_path.back() != '/')
+						{
+							dir_path += "\\";
+						}
+						::ShellExecuteA(nullptr, "open", "explorer.exe", dir_path.c_str(), nullptr, SW_SHOWDEFAULT);
+					}
+				}
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Opens the zonetool/ directory in Windows Explorer");
+				ImGui::EndTooltip();
+			}
+
+			ImGui::EndChild();
+		}
+		else if (active_tab == 4)
+		{
 			ImGui::BeginChild("ConsoleCard", ImVec2(0, 0), true);
 			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
 			ImGui::Text("OUTPUT LOG");
@@ -1771,6 +2071,213 @@ namespace gui
 				command_input_text_ = command_buf;
 			ImGui::EndChild();
 		}
+		else if (active_tab == 3)
+		{
+			ImGui::BeginChild("IOCard", ImVec2(0, 0), true);
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
+			ImGui::Text("IO OPERATIONS");
+			ImGui::PopStyleColor();
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			const float button_width = 300.0f;
+			const float button_height = 40.0f;
+			const float io_window_width = ImGui::GetContentRegionAvail().x;
+			const float io_center_offset = (io_window_width - button_width) / 2.0f;
+			if (io_center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + io_center_offset);
+
+			if (ImGui::Button("OPEN DUMP FOLDER", ImVec2(button_width, button_height)))
+			{
+				if (utils::io::directory_exists("dump"))
+				{
+					::ShellExecuteA(nullptr, "open", "dump", nullptr, nullptr, SW_SHOWDEFAULT);
+				}
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Opens the dump/ directory in Windows Explorer");
+				ImGui::EndTooltip();
+			}
+
+			ImGui::Spacing();
+
+			if (io_center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + io_center_offset);
+			if (ImGui::Button("OPEN ZONE SOURCE FOLDER", ImVec2(button_width, button_height)))
+			{
+				if (utils::io::directory_exists("zone_source"))
+				{
+					::ShellExecuteA(nullptr, "open", "zone_source", nullptr, nullptr, SW_SHOWDEFAULT);
+				}
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Opens the zone_source/ directory in Windows Explorer");
+				ImGui::EndTooltip();
+			}
+
+			ImGui::Spacing();
+
+			if (io_center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + io_center_offset);
+			if (ImGui::Button("OPEN ZONE FOLDER", ImVec2(button_width, button_height)))
+			{
+				if (utils::io::directory_exists("zone"))
+				{
+					::ShellExecuteA(nullptr, "open", "zone", nullptr, nullptr, SW_SHOWDEFAULT);
+				}
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Opens the zone/ directory in Windows Explorer");
+				ImGui::EndTooltip();
+			}
+
+			ImGui::Spacing();
+
+			if (io_center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + io_center_offset);
+			if (ImGui::Button("OPEN ZONETOOL FOLDER", ImVec2(button_width, button_height)))
+			{
+				if (utils::io::directory_exists("zonetool"))
+				{
+					char full_path[MAX_PATH];
+					if (::GetFullPathNameA("zonetool", MAX_PATH, full_path, nullptr) > 0)
+					{
+						std::string dir_path = full_path;
+						if (dir_path.back() != '\\' && dir_path.back() != '/')
+						{
+							dir_path += "\\";
+						}
+						::ShellExecuteA(nullptr, "open", "explorer.exe", dir_path.c_str(), nullptr, SW_SHOWDEFAULT);
+					}
+				}
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Opens the zonetool/ directory in Windows Explorer");
+				ImGui::EndTooltip();
+			}
+
+			ImGui::EndChild();
+		}
+		else if (active_tab == 4)
+		{
+			check_csv_file_external_changes();
+
+			ImGui::BeginChild("CsvEditorCard", ImVec2(0, 0), true);
+			ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.9f, 1.0f));
+			ImGui::Text("CSV EDITOR");
+			ImGui::PopStyleColor();
+			ImGui::SameLine();
+			
+			if (csv_editor_saving_)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+				ImGui::Text("Saving...");
+				ImGui::PopStyleColor();
+			}
+			else if (csv_editor_has_unsaved_changes_)
+			{
+				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.4f, 1.0f));
+				ImGui::Text("Unsaved changes");
+				ImGui::PopStyleColor();
+			}
+			else if (!csv_editor_current_file_.empty())
+			{
+				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 1.0f, 0.4f, 1.0f));
+				ImGui::Text("Saved");
+				ImGui::PopStyleColor();
+			}
+
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			ImGui::Text("CSV File:");
+			ImGui::BeginGroup();
+			ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 35.0f);
+			std::lock_guard<std::mutex> lock(csv_files_mutex_);
+			if (ImGui::BeginCombo("##csv_editor_file", selected_csv_editor_file_ >= 0 && static_cast<size_t>(selected_csv_editor_file_) < csv_files_.size() ? csv_files_[selected_csv_editor_file_].data() : "Select CSV..."))
+			{
+				const size_t size = csv_files_.size();
+				for (size_t i = 0; i < size; ++i)
+				{
+					const bool is_selected = (selected_csv_editor_file_ == static_cast<int>(i));
+					if (ImGui::Selectable(csv_files_[i].data(), is_selected))
+					{
+						if (csv_editor_has_unsaved_changes_ && !csv_editor_current_file_.empty())
+						{
+							save_csv_file();
+						}
+						selected_csv_editor_file_ = static_cast<int>(i);
+						load_csv_file(csv_files_[i]);
+					}
+					if (is_selected)
+						ImGui::SetItemDefaultFocus();
+				}
+				ImGui::EndCombo();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("+", ImVec2(30, 0)))
+			{
+				csv_editor_show_create_dialog_ = true;
+				std::memset(csv_editor_new_file_name_, 0, sizeof(csv_editor_new_file_name_));
+			}
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::BeginTooltip();
+				ImGui::Text("Create new CSV file");
+				ImGui::EndTooltip();
+			}
+			ImGui::EndGroup();
+
+			ImGui::Spacing();
+
+			if (!csv_editor_current_file_.empty())
+			{
+				const std::string file_path = "zone_source\\" + csv_editor_current_file_ + ".csv";
+				const size_t file_size = utils::io::file_size(file_path);
+				ImGui::Text("File: %s", file_path.c_str());
+				ImGui::Text("Size: %zu bytes", file_size);
+			}
+
+			ImGui::Spacing();
+			ImGui::Separator();
+			ImGui::Spacing();
+
+			if (!csv_editor_current_file_.empty())
+			{
+				std::lock_guard<std::mutex> lock_editor(csv_editor_mutex_);
+				const size_t current_size = csv_editor_content_.size();
+				const size_t buffer_size = std::max(current_size + 1, size_t(65536));
+				std::vector<char> buffer(buffer_size);
+				std::memcpy(buffer.data(), csv_editor_content_.data(), current_size);
+				buffer[current_size] = '\0';
+
+				if (ImGui::InputTextMultiline("##csv_content", buffer.data(), buffer_size, ImVec2(-1, -60), ImGuiInputTextFlags_AllowTabInput))
+				{
+					csv_editor_content_ = buffer.data();
+					csv_editor_has_unsaved_changes_ = true;
+					csv_editor_last_edit_ = std::chrono::steady_clock::now();
+				}
+
+				const auto now = std::chrono::steady_clock::now();
+				const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - csv_editor_last_edit_).count();
+				if (csv_editor_has_unsaved_changes_ && elapsed >= 1500 && !csv_editor_saving_)
+				{
+					save_csv_file();
+				}
+			}
+			else
+			{
+				ImGui::Text("Select a CSV file to edit");
+			}
+
+			ImGui::EndChild();
+		}
 
 		ImGui::End();
 	}
@@ -1801,13 +2308,23 @@ namespace gui
 
 	void component::refresh_csv_files()
 	{
-		const auto csv_files = commands::discover_csv_files();
-		std::lock_guard<std::mutex> lock(csv_files_mutex_);
-		csv_files_ = csv_files;
-		const size_t size = csv_files_.size();
-		if (static_cast<size_t>(selected_csv_) >= size)
+		try
 		{
-			selected_csv_ = -1;
+			const auto csv_files = commands::discover_csv_files();
+			std::lock_guard<std::mutex> lock(csv_files_mutex_);
+			csv_files_ = csv_files;
+			const size_t size = csv_files_.size();
+			if (static_cast<size_t>(selected_csv_) >= size)
+			{
+				selected_csv_ = -1;
+			}
+			if (static_cast<size_t>(selected_csv_editor_file_) >= size)
+			{
+				selected_csv_editor_file_ = -1;
+			}
+		}
+		catch (...)
+		{
 		}
 	}
 
@@ -1820,6 +2337,113 @@ namespace gui
 		if (static_cast<size_t>(selected_generate_csv_map_) >= size)
 		{
 			selected_generate_csv_map_ = -1;
+		}
+	}
+
+	void component::load_csv_file(const std::string& filename)
+	{
+		const std::string file_path = "zone_source\\" + filename + ".csv";
+		
+		if (!utils::io::file_exists(file_path))
+		{
+			return;
+		}
+
+		std::string content;
+		if (!utils::io::read_file(file_path, &content))
+		{
+			return;
+		}
+
+		try
+		{
+			std::filesystem::file_time_type mtime;
+			try
+			{
+				mtime = std::filesystem::last_write_time(file_path);
+			}
+			catch (const std::filesystem::filesystem_error&)
+			{
+				mtime = std::filesystem::file_time_type::min();
+			}
+			
+			std::lock_guard<std::mutex> lock(csv_editor_mutex_);
+			csv_editor_content_ = std::move(content);
+			csv_editor_current_file_ = filename;
+			csv_editor_file_mtime_ = mtime;
+			csv_editor_has_unsaved_changes_ = false;
+			csv_editor_last_edit_ = std::chrono::steady_clock::now();
+		}
+		catch (...)
+		{
+		}
+	}
+
+	void component::save_csv_file()
+	{
+		if (csv_editor_current_file_.empty() || csv_editor_saving_)
+		{
+			return;
+		}
+
+		csv_editor_saving_ = true;
+
+		const std::string file_path = "zone_source\\" + csv_editor_current_file_ + ".csv";
+		
+		std::string content;
+		{
+			std::lock_guard<std::mutex> lock(csv_editor_mutex_);
+			content = csv_editor_content_;
+		}
+
+		if (utils::io::write_file(file_path, content, false))
+		{
+			try
+			{
+				const auto mtime = std::filesystem::last_write_time(file_path);
+				std::lock_guard<std::mutex> lock(csv_editor_mutex_);
+				csv_editor_file_mtime_ = mtime;
+				csv_editor_has_unsaved_changes_ = false;
+			}
+			catch (...)
+			{
+			}
+		}
+
+		csv_editor_saving_ = false;
+	}
+
+	void component::check_csv_file_external_changes()
+	{
+		if (csv_editor_current_file_.empty() || csv_editor_saving_ || csv_editor_has_unsaved_changes_)
+		{
+			return;
+		}
+
+		const std::string file_path = "zone_source\\" + csv_editor_current_file_ + ".csv";
+		
+		if (!utils::io::file_exists(file_path))
+		{
+			return;
+		}
+
+		try
+		{
+			const auto current_mtime = std::filesystem::last_write_time(file_path);
+			std::lock_guard<std::mutex> lock(csv_editor_mutex_);
+			if (current_mtime != csv_editor_file_mtime_)
+			{
+				std::string content;
+				if (utils::io::read_file(file_path, &content))
+				{
+					csv_editor_content_ = std::move(content);
+					csv_editor_file_mtime_ = current_mtime;
+					csv_editor_has_unsaved_changes_ = false;
+				}
+			}
+		}
+		catch (...)
+		{
 		}
 	}
 

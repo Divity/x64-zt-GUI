@@ -59,34 +59,34 @@ namespace gui
 			scan_directory("zone/english");
 			scan_directory(".");
 
-		std::sort(fastfiles.begin(), fastfiles.end());
-		return fastfiles;
-	}
+			std::sort(fastfiles.begin(), fastfiles.end());
+			return fastfiles;
+		}
 
 	std::vector<std::string> discover_map_zones()
 	{
 		std::vector<std::string> map_zones;
 		std::unordered_set<std::string> seen;
 
-	const auto is_map_zone = [](const std::string& zone) -> bool
-	{
-		if (zone.find("mp_body_") != std::string::npos ||
-			zone.find("mp_head_") != std::string::npos ||
-			zone.find("mp_legs_") != std::string::npos ||
-			zone.find("mp_hands_") != std::string::npos ||
-			zone.find("mp_viewhands_") != std::string::npos ||
-			zone.find("mp_weapon_") != std::string::npos)
+		const auto is_map_zone = [](const std::string& zone) -> bool
 		{
+			if (zone.find("mp_body_") != std::string::npos ||
+				zone.find("mp_head_") != std::string::npos ||
+				zone.find("mp_legs_") != std::string::npos ||
+				zone.find("mp_hands_") != std::string::npos ||
+				zone.find("mp_viewhands_") != std::string::npos ||
+				zone.find("mp_weapon_") != std::string::npos)
+			{
+				return false;
+			}
+		
+			if (zone.starts_with("mp_") || zone.starts_with("cp_") || zone.find('_') == std::string::npos)
+			{
+				return true;
+			}
+		
 			return false;
-		}
-		
-		if (zone.starts_with("mp_") || zone.starts_with("cp_") || zone.find('_') == std::string::npos)
-		{
-			return true;
-		}
-		
-		return false;
-	};
+		};
 
 		const auto scan_directory = [&](const std::string& path)
 		{
@@ -159,16 +159,15 @@ namespace gui
 	std::vector<std::string> discover_zonetool_maps()
 	{
 		std::vector<std::string> maps;
-		const std::string zonetool_dir = "zonetool";
 
-		if (!utils::io::directory_exists(zonetool_dir))
+		if (!utils::io::directory_exists("zonetool"))
 		{
 			return maps;
 		}
 
 		try
 		{
-			for (const auto& entry : std::filesystem::directory_iterator(zonetool_dir))
+			for (const auto& entry : std::filesystem::directory_iterator("zonetool"))
 			{
 				if (entry.is_directory())
 				{
@@ -497,36 +496,6 @@ namespace gui
 				break;
 			case game::t7:
 				// Not available in T7
-				break;
-			default:
-				break;
-			}
-		}
-
-		void iterate_zones()
-		{
-			const auto mode = game::get_mode();
-			const std::string command = "iteratezones"s;
-
-			switch (mode)
-			{
-			case game::h1:
-				::h1::command::execute(command);
-				break;
-			case game::h2:
-				// Not available in H2
-				break;
-			case game::s1:
-				// Not available in S1
-				break;
-			case game::iw6:
-				// Not available in IW6
-				break;
-			case game::iw7:
-				::iw7::command::execute(command);
-				break;
-			case game::t7:
-				::t7::command::execute(command);
 				break;
 			default:
 				break;
