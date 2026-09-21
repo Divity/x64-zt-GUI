@@ -12,6 +12,562 @@
 
 namespace zonetool::h1
 {
+	namespace json_
+	{
+		constexpr const char* g_TechniqueNames[] = {
+		"TECHNIQUE_ZPREPASS",
+		"TECHNIQUE_ZPREPASS_VELOCITY_RIGID",
+		"TECHNIQUE_ZPREPASS_VELOCITY_SKINNED",
+		"TECHNIQUE_ZPREPASS_HIDIR",
+		"TECHNIQUE_ZPREPASS_HIDIR_VELOCITY_RIGID",
+		"TECHNIQUE_ZPREPASS_HIDIR_VELOCITY_SKINNED",
+		"TECHNIQUE_BUILD_SHADOWMAP_DEPTH",
+		"TECHNIQUE_BUILD_SHADOWMAP_COLOR",
+		"TECHNIQUE_UNLIT",
+		"TECHNIQUE_EMISSIVE",
+		"TECHNIQUE_EMISSIVE_DFOG",
+		"TECHNIQUE_EMISSIVE_SHADOW",
+		"TECHNIQUE_EMISSIVE_SHADOW_DFOG",
+		"TECHNIQUE_LIT",
+		"TECHNIQUE_LIT_DIR",
+		"TECHNIQUE_LIT_DIR_SHADOW",
+		"TECHNIQUE_LIT_SPOT",
+		"TECHNIQUE_LIT_SPOT_SHADOW",
+		"TECHNIQUE_LIT_SPOT_SHADOW_CUCOLORIS",
+		"TECHNIQUE_LIT_OMNI",
+		"TECHNIQUE_LIT_OMNI_SHADOW",
+		"TECHNIQUE_LIT_DYNAMIC_BRANCHING_CUCOLORIS",
+		"TECHNIQUE_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS",
+		"TECHNIQUE_LIT_DYNAMIC_BRANCHING",
+		"TECHNIQUE_LIT_SUN_DYNAMIC_BRANCHING",
+		"TECHNIQUE_LIT_DFOG",
+		"TECHNIQUE_LIT_DIR_DFOG",
+		"TECHNIQUE_LIT_DIR_SHADOW_DFOG",
+		"TECHNIQUE_LIT_SPOT_DFOG",
+		"TECHNIQUE_LIT_SPOT_SHADOW_DFOG",
+		"TECHNIQUE_LIT_SPOT_SHADOW_CUCOLORIS_DFOG",
+		"TECHNIQUE_LIT_OMNI_DFOG",
+		"TECHNIQUE_LIT_OMNI_SHADOW_DFOG",
+		"TECHNIQUE_LIT_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
+		"TECHNIQUE_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
+		"TECHNIQUE_LIT_DYNAMIC_BRANCHING_DFOG",
+		"TECHNIQUE_LIT_SUN_DYNAMIC_BRANCHING_DFOG",
+		"TECHNIQUE_LIGHT_SPOT",
+		"TECHNIQUE_LIGHT_OMNI",
+		"TECHNIQUE_LIGHT_SPOT_SHADOW",
+		"TECHNIQUE_LIGHT_SPOT_SHADOW_CUCOLORIS",
+		"TECHNIQUE_LIGHT_SPOT_STENCIL",
+		"TECHNIQUE_LIGHT_OMNI_STENCIL",
+		"TECHNIQUE_LIGHT_SPOT_DFOG",
+		"TECHNIQUE_LIGHT_OMNI_DFOG",
+		"TECHNIQUE_LIGHT_SPOT_SHADOW_DFOG",
+		"TECHNIQUE_LIGHT_SPOT_SHADOW_CUCOLORIS_DFOG",
+		"TECHNIQUE_LIGHT_SPOT_STENCIL_DFOG",
+		"TECHNIQUE_LIGHT_OMNI_STENCIL_DFOG",
+		"TECHNIQUE_FAKELIGHT_NORMAL",
+		"TECHNIQUE_FAKELIGHT_VIEW",
+		"TECHNIQUE_SUNLIGHT_PREVIEW",
+		"TECHNIQUE_CASE_TEXTURE",
+		"TECHNIQUE_WIREFRAME_SOLID",
+		"TECHNIQUE_WIREFRAME_SHADED",
+		"TECHNIQUE_THERMAL",
+		"TECHNIQUE_CTQ",
+		"TECHNIQUE_VELOCITY_RIGID",
+		"TECHNIQUE_VELOCITY_SKINNED",
+		"TECHNIQUE_DEBUG_BUMPMAP",
+		"TECHNIQUE_INSTANCED_ZPREPASS",
+		"TECHNIQUE_INSTANCED_ZPREPASS_VELOCITY_RIGID",
+		"TECHNIQUE_INSTANCED_ZPREPASS_VELOCITY_SKINNED",
+		"TECHNIQUE_INSTANCED_ZPREPASS_HIDIR",
+		"TECHNIQUE_INSTANCED_ZPREPASS_HIDIR_VELOCITY_RIGID",
+		"TECHNIQUE_INSTANCED_ZPREPASS_HIDIR_VELOCITY_SKINNED",
+		"TECHNIQUE_INSTANCED_BUILD_SHADOWMAP_DEPTH",
+		"TECHNIQUE_INSTANCED_BUILD_SHADOWMAP_COLOR",
+		"TECHNIQUE_INSTANCED_UNLIT",
+		"TECHNIQUE_INSTANCED_EMISSIVE",
+		"TECHNIQUE_INSTANCED_EMISSIVE_DFOG",
+		"TECHNIQUE_INSTANCED_EMISSIVE_SHADOW",
+		"TECHNIQUE_INSTANCED_EMISSIVE_SHADOW_DFOG",
+		"TECHNIQUE_INSTANCED_LIT",
+		"TECHNIQUE_INSTANCED_LIT_DIR",
+		"TECHNIQUE_INSTANCED_LIT_DIR_SHADOW",
+		"TECHNIQUE_INSTANCED_LIT_SPOT",
+		"TECHNIQUE_INSTANCED_LIT_SPOT_SHADOW",
+		"TECHNIQUE_INSTANCED_LIT_SPOT_SHADOW_CUCOLORIS",
+		"TECHNIQUE_INSTANCED_LIT_OMNI",
+		"TECHNIQUE_INSTANCED_LIT_OMNI_SHADOW",
+		"TECHNIQUE_INSTANCED_LIT_DYNAMIC_BRANCHING_CUCOLORIS",
+		"TECHNIQUE_INSTANCED_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS",
+		"TECHNIQUE_INSTANCED_LIT_DYNAMIC_BRANCHING",
+		"TECHNIQUE_INSTANCED_LIT_SUN_DYNAMIC_BRANCHING",
+		"TECHNIQUE_INSTANCED_LIT_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_DIR_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_DIR_SHADOW_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_SPOT_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_SPOT_SHADOW_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_SPOT_SHADOW_CUCOLORIS_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_OMNI_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_OMNI_SHADOW_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_DYNAMIC_BRANCHING_DFOG",
+		"TECHNIQUE_INSTANCED_LIT_SUN_DYNAMIC_BRANCHING_DFOG",
+		"TECHNIQUE_INSTANCED_LIGHT_SPOT",
+		"TECHNIQUE_INSTANCED_LIGHT_OMNI",
+		"TECHNIQUE_INSTANCED_LIGHT_SPOT_SHADOW",
+		"TECHNIQUE_INSTANCED_LIGHT_SPOT_SHADOW_CUCOLORIS",
+		"TECHNIQUE_INSTANCED_LIGHT_SPOT_STENCIL",
+		"TECHNIQUE_INSTANCED_LIGHT_OMNI_STENCIL",
+		"TECHNIQUE_INSTANCED_LIGHT_SPOT_DFOG",
+		"TECHNIQUE_INSTANCED_LIGHT_OMNI_DFOG",
+		"TECHNIQUE_INSTANCED_LIGHT_SPOT_SHADOW_DFOG",
+		"TECHNIQUE_INSTANCED_LIGHT_SPOT_SHADOW_CUCOLORIS_DFOG",
+		"TECHNIQUE_INSTANCED_LIGHT_SPOT_STENCIL_DFOG",
+		"TECHNIQUE_INSTANCED_LIGHT_OMNI_STENCIL_DFOG",
+		"TECHNIQUE_INSTANCED_FAKELIGHT_NORMAL",
+		"TECHNIQUE_INSTANCED_FAKELIGHT_VIEW",
+		"TECHNIQUE_INSTANCED_SUNLIGHT_PREVIEW",
+		"TECHNIQUE_INSTANCED_CASE_TEXTURE",
+		"TECHNIQUE_INSTANCED_WIREFRAME_SOLID",
+		"TECHNIQUE_INSTANCED_WIREFRAME_SHADED",
+		"TECHNIQUE_INSTANCED_THERMAL",
+		"TECHNIQUE_INSTANCED_CTQ",
+		"TECHNIQUE_INSTANCED_VELOCITY_RIGID",
+		"TECHNIQUE_INSTANCED_VELOCITY_SKINNED",
+		"TECHNIQUE_INSTANCED_DEBUG_BUMPMAP",
+		"TECHNIQUE_SUBDIV_PATCH_ZPREPASS",
+		"TECHNIQUE_SUBDIV_PATCH_ZPREPASS_VELOCITY_RIGID",
+		"TECHNIQUE_SUBDIV_PATCH_ZPREPASS_VELOCITY_SKINNED",
+		"TECHNIQUE_SUBDIV_PATCH_ZPREPASS_HIDIR",
+		"TECHNIQUE_SUBDIV_PATCH_ZPREPASS_HIDIR_VELOCITY_RIGID",
+		"TECHNIQUE_SUBDIV_PATCH_ZPREPASS_HIDIR_VELOCITY_SKINNED",
+		"TECHNIQUE_SUBDIV_PATCH_BUILD_SHADOWMAP_DEPTH",
+		"TECHNIQUE_SUBDIV_PATCH_BUILD_SHADOWMAP_COLOR",
+		"TECHNIQUE_SUBDIV_PATCH_UNLIT",
+		"TECHNIQUE_SUBDIV_PATCH_EMISSIVE",
+		"TECHNIQUE_SUBDIV_PATCH_EMISSIVE_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_EMISSIVE_SHADOW",
+		"TECHNIQUE_SUBDIV_PATCH_EMISSIVE_SHADOW_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_DIR",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_DIR_SHADOW",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT_SHADOW",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT_SHADOW_CUCOLORIS",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_OMNI",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_OMNI_SHADOW",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_DYNAMIC_BRANCHING_CUCOLORIS",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_DYNAMIC_BRANCHING",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_SUN_DYNAMIC_BRANCHING",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_DIR_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_DIR_SHADOW_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT_SHADOW_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT_SHADOW_CUCOLORIS_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_OMNI_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_OMNI_SHADOW_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_DYNAMIC_BRANCHING_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIT_SUN_DYNAMIC_BRANCHING_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_OMNI",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_SHADOW",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_SHADOW_CUCOLORIS",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_STENCIL",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_OMNI_STENCIL",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_OMNI_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_SHADOW_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_SHADOW_CUCOLORIS_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_STENCIL_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_LIGHT_OMNI_STENCIL_DFOG",
+		"TECHNIQUE_SUBDIV_PATCH_FAKELIGHT_NORMAL",
+		"TECHNIQUE_SUBDIV_PATCH_FAKELIGHT_VIEW",
+		"TECHNIQUE_SUBDIV_PATCH_SUNLIGHT_PREVIEW",
+		"TECHNIQUE_SUBDIV_PATCH_CASE_TEXTURE",
+		"TECHNIQUE_SUBDIV_PATCH_WIREFRAME_SOLID",
+		"TECHNIQUE_SUBDIV_PATCH_WIREFRAME_SHADED",
+		"TECHNIQUE_SUBDIV_PATCH_THERMAL",
+		"TECHNIQUE_SUBDIV_PATCH_CTQ",
+		"TECHNIQUE_SUBDIV_PATCH_VELOCITY_RIGID",
+		"TECHNIQUE_SUBDIV_PATCH_VELOCITY_SKINNED",
+		"TECHNIQUE_SUBDIV_PATCH_DEBUG_BUMPMAP",
+		"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS",
+		"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS_VELOCITY_RIGID",
+		"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS_VELOCITY_SKINNED",
+		"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS_HIDIR",
+		"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS_HIDIR_VELOCITY_RIGID",
+		"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS_HIDIR_VELOCITY_SKINNED",
+		"TECHNIQUE_NO_DISPLACEMENT_BUILD_SHADOWMAP_DEPTH",
+		"TECHNIQUE_NO_DISPLACEMENT_BUILD_SHADOWMAP_COLOR",
+		"TECHNIQUE_NO_DISPLACEMENT_UNLIT",
+		"TECHNIQUE_NO_DISPLACEMENT_EMISSIVE",
+		"TECHNIQUE_NO_DISPLACEMENT_EMISSIVE_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_EMISSIVE_SHADOW",
+		"TECHNIQUE_NO_DISPLACEMENT_EMISSIVE_SHADOW_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_DIR",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_DIR_SHADOW",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT_SHADOW",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT_SHADOW_CUCOLORIS",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_OMNI",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_OMNI_SHADOW",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_DYNAMIC_BRANCHING_CUCOLORIS",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_DYNAMIC_BRANCHING",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_SUN_DYNAMIC_BRANCHING",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_DIR_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_DIR_SHADOW_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT_SHADOW_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT_SHADOW_CUCOLORIS_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_OMNI_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_OMNI_SHADOW_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_DYNAMIC_BRANCHING_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIT_SUN_DYNAMIC_BRANCHING_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_OMNI",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_SHADOW",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_SHADOW_CUCOLORIS",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_STENCIL",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_OMNI_STENCIL",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_OMNI_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_SHADOW_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_SHADOW_CUCOLORIS_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_STENCIL_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_LIGHT_OMNI_STENCIL_DFOG",
+		"TECHNIQUE_NO_DISPLACEMENT_FAKELIGHT_NORMAL",
+		"TECHNIQUE_NO_DISPLACEMENT_FAKELIGHT_VIEW",
+		"TECHNIQUE_NO_DISPLACEMENT_SUNLIGHT_PREVIEW",
+		"TECHNIQUE_NO_DISPLACEMENT_CASE_TEXTURE",
+		"TECHNIQUE_NO_DISPLACEMENT_WIREFRAME_SOLID",
+		"TECHNIQUE_NO_DISPLACEMENT_WIREFRAME_SHADED",
+		"TECHNIQUE_NO_DISPLACEMENT_THERMAL",
+		"TECHNIQUE_NO_DISPLACEMENT_CTQ",
+		"TECHNIQUE_NO_DISPLACEMENT_VELOCITY_RIGID",
+		"TECHNIQUE_NO_DISPLACEMENT_VELOCITY_SKINNED",
+		"TECHNIQUE_NO_DISPLACEMENT_DEBUG_BUMPMAP"
+		};
+
+		MaterialTechniqueSet* parse(const std::string& name, zone_memory* mem)
+		{
+			const auto path2 = "techsets\\" + name + ".techset.json";
+			auto file = filesystem::file(path2);
+			file.open("rb");
+
+			auto fp = file.get_fp();
+			if (!fp)
+			{
+				return nullptr;
+			}
+
+			std::string buffer;
+			fseek(fp, 0, SEEK_END);
+			buffer.resize(ftell(fp));
+			fseek(fp, 0, SEEK_SET);
+
+			fread(buffer.data(), 1, buffer.size(), fp);
+			file.close();
+
+			const auto data = ordered_json::parse(buffer);
+
+			auto* asset = mem->allocate<MaterialTechniqueSet>();
+
+			asset->name = _strdup(data["name"].get<std::string>().c_str());
+			asset->flags = data["flags"].get<unsigned short>();
+			asset->worldVertFormat = data["worldVertFormat"].get<unsigned char>();
+			asset->preDisplacementOnlyCount = data["preDisplacementOnlyCount"].get<unsigned char>();
+
+			memset(asset->techniques, 0, sizeof(asset->techniques));
+
+			for (auto technique = 0; technique < MaterialTechniqueType::TECHNIQUE_COUNT; technique++)
+			{
+				const auto& technique_name = g_TechniqueNames[technique];
+
+				if (!data["techniques"].contains(technique_name))
+				{
+					continue;
+				}
+
+				const auto& technique_json = data["techniques"][technique_name];
+
+				if (technique_json.is_null())
+				{
+					continue;
+				}
+
+				const auto& passes_json = technique_json["passes"];
+				const auto pass_count = passes_json.size();
+
+				auto* materialTechnique = mem->manual_allocate<MaterialTechnique>(sizeof(MaterialTechniqueHeader) + sizeof(MaterialPass) * pass_count);
+				memset(materialTechnique, 0, sizeof(MaterialTechniqueHeader) + sizeof(MaterialPass) * pass_count);
+
+				materialTechnique->hdr.name =
+					mem->duplicate_string(technique_json["name"].get<std::string>());
+
+				materialTechnique->hdr.flags =
+					technique_json["flags"].get<unsigned short>();
+
+				materialTechnique->hdr.passCount =
+					static_cast<unsigned short>(pass_count);
+
+				for (unsigned short pass = 0;
+					pass < materialTechnique->hdr.passCount;
+					pass++)
+				{
+					auto& techniquePass = materialTechnique->passArray[pass];
+					const auto& pass_json = passes_json[pass];
+
+					auto read_shader = [mem](const ordered_json& value)
+					{
+						if (!value.is_string())
+						{
+							return static_cast<MaterialVertexShader*>(nullptr);
+						}
+
+						const auto name = value.get<std::string>();
+						if (name.empty())
+						{
+							return static_cast<MaterialVertexShader*>(nullptr);
+						}
+
+						auto* shader = mem->allocate<MaterialVertexShader>();
+						memset(shader, 0, sizeof(MaterialVertexShader));
+
+						shader->name = mem->duplicate_string(name);
+						return shader;
+					};
+
+					techniquePass.vertexShader =
+						reinterpret_cast<MaterialVertexShader*>(
+							read_shader(pass_json["vertexShader"]));
+
+					techniquePass.vertexDecl =
+						pass_json["vertexDecl"].get<std::string>().empty()
+						? nullptr
+						: [mem](const std::string& name)
+					{
+						auto* decl = mem->allocate<MaterialVertexDeclaration>();
+						memset(decl, 0, sizeof(MaterialVertexDeclaration));
+						decl->name = mem->duplicate_string(name);
+						return decl;
+					}(pass_json["vertexDecl"]);
+
+					techniquePass.hullShader =
+						reinterpret_cast<MaterialHullShader*>(
+							read_shader(pass_json["hullShader"]));
+
+					techniquePass.domainShader =
+						reinterpret_cast<MaterialDomainShader*>(
+							read_shader(pass_json["domainShader"]));
+
+					techniquePass.pixelShader =
+						reinterpret_cast<MaterialPixelShader*>(
+							read_shader(pass_json["pixelShader"]));
+
+					techniquePass.pixelOutputMask =
+						pass_json["pixelOutputMask"].get<unsigned char>();
+
+					techniquePass.perPrimArgCount =
+						pass_json["perPrimArgCount"].get<unsigned char>();
+
+					techniquePass.perObjArgCount =
+						pass_json["perObjArgCount"].get<unsigned char>();
+
+					techniquePass.stableArgCount =
+						pass_json["stableArgCount"].get<unsigned char>();
+
+					techniquePass.perPrimArgSize =
+						pass_json["perPrimArgSize"].get<unsigned short>();
+
+					techniquePass.perObjArgSize =
+						pass_json["perObjArgSize"].get<unsigned short>();
+
+					techniquePass.stableArgSize =
+						pass_json["stableArgSize"].get<unsigned short>();
+
+					techniquePass.customBufferFlags =
+						pass_json["customBufferFlags"].get<unsigned int>();
+
+					techniquePass.customSamplerFlags =
+						pass_json["customSamplerFlags"].get<unsigned char>();
+
+					techniquePass.precompiledIndex =
+						pass_json["precompiledIndex"].get<unsigned char>();
+
+					techniquePass.stageConfig =
+						pass_json["stageConfig"].get<unsigned char>();
+
+					const auto arg_count =
+						techniquePass.perPrimArgCount +
+						techniquePass.perObjArgCount +
+						techniquePass.stableArgCount;
+
+					techniquePass.args = new MaterialShaderArgument[arg_count];
+					memset(
+						techniquePass.args,
+						0,
+						sizeof(MaterialShaderArgument) * arg_count
+					);
+
+					const auto& args_json = pass_json["args"];
+
+					for (int arg = 0; arg < arg_count; arg++)
+					{
+						auto& shaderArg = techniquePass.args[arg];
+						const auto& arg_json = args_json[arg];
+
+						shaderArg.type = arg_json["type"].get<unsigned char>();
+						shaderArg.shader = arg_json["shader"].get<unsigned char>();
+						shaderArg.dest = arg_json["dest"].get<unsigned short>();
+
+						if (shaderArg.type == MTL_ARG_LITERAL_CONST)
+						{
+							for (auto i = 0; i < 4; i++)
+							{
+								shaderArg.u.literalConst[i] =
+									arg_json["literalConst"][i].get<float>();
+							}
+						}
+						else if (shaderArg.type == MTL_ARG_CODE_CONST)
+						{
+							shaderArg.u.codeConst.index =
+								arg_json["codeConstIndex"].get<unsigned short>();
+
+							shaderArg.u.codeConst.firstRow =
+								arg_json["codeConstFirstRow"].get<char>();
+
+							shaderArg.u.codeConst.rowCount =
+								arg_json["codeConstRowCount"].get<char>();
+						}
+						else if (
+							shaderArg.type == MTL_ARG_MATERIAL_CONST ||
+							shaderArg.type == MTL_ARG_MATERIAL_TEXTURE ||
+							shaderArg.type == MTL_ARG_MATERIAL_SAMPLER)
+						{
+							shaderArg.u.nameHash =
+								arg_json["nameHash"].get<unsigned int>();
+						}
+						else
+						{
+							shaderArg.u.codeSampler =
+								arg_json["codeSampler"].get<unsigned int>();
+						}
+					}
+				}
+
+				asset->techniques[technique] = materialTechnique;
+			}
+
+			return asset;
+		}
+
+#ifdef DUMP_JSON
+		void dump(MaterialTechniqueSet* asset)
+		{
+			ordered_json data = {};
+
+			data["name"] = asset->name;
+			data["flags"] = asset->flags;
+			data["worldVertFormat"] = asset->worldVertFormat;
+			data["preDisplacementOnlyCount"] = asset->preDisplacementOnlyCount;
+			data["techniques"] = ordered_json::object();
+			for (auto technique = 0; technique < MaterialTechniqueType::TECHNIQUE_COUNT; technique++)
+			{
+				if (!asset->techniques[technique])
+				{
+					data["techniques"][g_TechniqueNames[technique]];
+					continue;
+				}
+				ordered_json technique_data = {};
+				technique_data["name"] = asset->techniques[technique]->hdr.name;
+				technique_data["flags"] = asset->techniques[technique]->hdr.flags;
+				technique_data["passes"] = ordered_json::array();
+				for (unsigned short pass = 0; pass < asset->techniques[technique]->hdr.passCount; pass++)
+				{
+					auto& techniquePass = asset->techniques[technique]->passArray[pass];
+					ordered_json pass_data = {};
+					pass_data["vertexShader"] = techniquePass.vertexShader ? techniquePass.vertexShader->name : "";
+					pass_data["vertexDecl"] = techniquePass.vertexDecl ? techniquePass.vertexDecl->name : "";
+					pass_data["hullShader"] = techniquePass.hullShader ? techniquePass.hullShader->name : "";
+					pass_data["domainShader"] = techniquePass.domainShader ? techniquePass.domainShader->name : "";
+					pass_data["pixelShader"] = techniquePass.pixelShader ? techniquePass.pixelShader->name : "";
+					pass_data["pixelOutputMask"] = techniquePass.pixelOutputMask;
+					pass_data["perPrimArgCount"] = techniquePass.perPrimArgCount;
+					pass_data["perObjArgCount"] = techniquePass.perObjArgCount;
+					pass_data["stableArgCount"] = techniquePass.stableArgCount;
+					pass_data["perPrimArgSize"] = techniquePass.perPrimArgSize;
+					pass_data["perObjArgSize"] = techniquePass.perObjArgSize;
+					pass_data["stableArgSize"] = techniquePass.stableArgSize;
+					pass_data["customBufferFlags"] = techniquePass.customBufferFlags;
+					pass_data["customSamplerFlags"] = techniquePass.customSamplerFlags;
+					pass_data["precompiledIndex"] = techniquePass.precompiledIndex;
+					pass_data["stageConfig"] = techniquePass.stageConfig;
+
+					pass_data["args"] = ordered_json::array();
+					for (auto arg = 0; arg <
+						techniquePass.perPrimArgCount +
+						techniquePass.perObjArgCount +
+						techniquePass.stableArgCount; arg++)
+					{
+						ordered_json arg_data = {};
+						arg_data["type"] = techniquePass.args[arg].type;
+						arg_data["shader"] = techniquePass.args[arg].shader;
+						arg_data["dest"] = techniquePass.args[arg].dest;
+						if (techniquePass.args[arg].type == MTL_ARG_LITERAL_CONST)
+						{
+							arg_data["literalConst"] = ordered_json::array();
+							for (auto i = 0; i < 4; i++)
+							{
+								arg_data["literalConst"].push_back(techniquePass.args[arg].u.literalConst[i]);
+							}
+						}
+						else if (techniquePass.args[arg].type == MTL_ARG_CODE_CONST)
+						{
+							arg_data["codeConstIndex"] = techniquePass.args[arg].u.codeConst.index;
+							arg_data["codeConstFirstRow"] = techniquePass.args[arg].u.codeConst.firstRow;
+							arg_data["codeConstRowCount"] = techniquePass.args[arg].u.codeConst.rowCount;
+						}
+						else if (techniquePass.args[arg].type == MTL_ARG_MATERIAL_CONST ||
+							techniquePass.args[arg].type == MTL_ARG_MATERIAL_TEXTURE ||
+							techniquePass.args[arg].type == MTL_ARG_MATERIAL_SAMPLER)
+						{
+							arg_data["nameHash"] = techniquePass.args[arg].u.nameHash;
+						}
+						else
+						{
+							arg_data["codeSampler"] = techniquePass.args[arg].u.codeSampler;
+						}
+						pass_data["args"].push_back(arg_data);
+					}
+
+					technique_data["passes"].push_back(pass_data);
+				}
+				data["techniques"][g_TechniqueNames[technique]] = technique_data;
+			}
+
+			const auto path = "dumped_techsets\\"s + asset->name + ".techset.json";
+			auto file = filesystem::file(path);
+			file.open("wb");
+			auto fp = file.get_fp();
+			if (fp)
+			{
+				const auto json_dump = data.dump(4);
+				file.write(json_dump.data(), json_dump.size(), 1);
+				file.close();
+			}
+		}
+#endif
+	}
+
 	namespace material_data
 	{
 		namespace
@@ -210,6 +766,14 @@ namespace zonetool::h1
 	MaterialTechniqueSet* techset::parse(const std::string& name, zone_memory* mem)
 	{
 		ZONETOOL_INFO("Parsing techset \"%s\"...", name.data());
+
+		{
+			auto* asset = json_::parse(name, mem);
+			if(asset)
+			{
+				return asset;
+			}
+		}
 
 		auto* asset_final = parse_internal(name, mem, true);
 
@@ -705,346 +1269,6 @@ namespace zonetool::h1
 
 		buf->pop_stream();
 	}
-
-#ifdef DUMP_JSON
-	constexpr const char* g_TechniqueNames[] = {
-	"TECHNIQUE_ZPREPASS",
-	"TECHNIQUE_ZPREPASS_VELOCITY_RIGID",
-	"TECHNIQUE_ZPREPASS_VELOCITY_SKINNED",
-	"TECHNIQUE_ZPREPASS_HIDIR",
-	"TECHNIQUE_ZPREPASS_HIDIR_VELOCITY_RIGID",
-	"TECHNIQUE_ZPREPASS_HIDIR_VELOCITY_SKINNED",
-	"TECHNIQUE_BUILD_SHADOWMAP_DEPTH",
-	"TECHNIQUE_BUILD_SHADOWMAP_COLOR",
-	"TECHNIQUE_UNLIT",
-	"TECHNIQUE_EMISSIVE",
-	"TECHNIQUE_EMISSIVE_DFOG",
-	"TECHNIQUE_EMISSIVE_SHADOW",
-	"TECHNIQUE_EMISSIVE_SHADOW_DFOG",
-	"TECHNIQUE_LIT",
-	"TECHNIQUE_LIT_DIR",
-	"TECHNIQUE_LIT_DIR_SHADOW",
-	"TECHNIQUE_LIT_SPOT",
-	"TECHNIQUE_LIT_SPOT_SHADOW",
-	"TECHNIQUE_LIT_SPOT_SHADOW_CUCOLORIS",
-	"TECHNIQUE_LIT_OMNI",
-	"TECHNIQUE_LIT_OMNI_SHADOW",
-	"TECHNIQUE_LIT_DYNAMIC_BRANCHING_CUCOLORIS",
-	"TECHNIQUE_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS",
-	"TECHNIQUE_LIT_DYNAMIC_BRANCHING",
-	"TECHNIQUE_LIT_SUN_DYNAMIC_BRANCHING",
-	"TECHNIQUE_LIT_DFOG",
-	"TECHNIQUE_LIT_DIR_DFOG",
-	"TECHNIQUE_LIT_DIR_SHADOW_DFOG",
-	"TECHNIQUE_LIT_SPOT_DFOG",
-	"TECHNIQUE_LIT_SPOT_SHADOW_DFOG",
-	"TECHNIQUE_LIT_SPOT_SHADOW_CUCOLORIS_DFOG",
-	"TECHNIQUE_LIT_OMNI_DFOG",
-	"TECHNIQUE_LIT_OMNI_SHADOW_DFOG",
-	"TECHNIQUE_LIT_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
-	"TECHNIQUE_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
-	"TECHNIQUE_LIT_DYNAMIC_BRANCHING_DFOG",
-	"TECHNIQUE_LIT_SUN_DYNAMIC_BRANCHING_DFOG",
-	"TECHNIQUE_LIGHT_SPOT",
-	"TECHNIQUE_LIGHT_OMNI",
-	"TECHNIQUE_LIGHT_SPOT_SHADOW",
-	"TECHNIQUE_LIGHT_SPOT_SHADOW_CUCOLORIS",
-	"TECHNIQUE_LIGHT_SPOT_STENCIL",
-	"TECHNIQUE_LIGHT_OMNI_STENCIL",
-	"TECHNIQUE_LIGHT_SPOT_DFOG",
-	"TECHNIQUE_LIGHT_OMNI_DFOG",
-	"TECHNIQUE_LIGHT_SPOT_SHADOW_DFOG",
-	"TECHNIQUE_LIGHT_SPOT_SHADOW_CUCOLORIS_DFOG",
-	"TECHNIQUE_LIGHT_SPOT_STENCIL_DFOG",
-	"TECHNIQUE_LIGHT_OMNI_STENCIL_DFOG",
-	"TECHNIQUE_FAKELIGHT_NORMAL",
-	"TECHNIQUE_FAKELIGHT_VIEW",
-	"TECHNIQUE_SUNLIGHT_PREVIEW",
-	"TECHNIQUE_CASE_TEXTURE",
-	"TECHNIQUE_WIREFRAME_SOLID",
-	"TECHNIQUE_WIREFRAME_SHADED",
-	"TECHNIQUE_THERMAL",
-	"TECHNIQUE_CTQ",
-	"TECHNIQUE_VELOCITY_RIGID",
-	"TECHNIQUE_VELOCITY_SKINNED",
-	"TECHNIQUE_DEBUG_BUMPMAP",
-	"TECHNIQUE_INSTANCED_ZPREPASS",
-	"TECHNIQUE_INSTANCED_ZPREPASS_VELOCITY_RIGID",
-	"TECHNIQUE_INSTANCED_ZPREPASS_VELOCITY_SKINNED",
-	"TECHNIQUE_INSTANCED_ZPREPASS_HIDIR",
-	"TECHNIQUE_INSTANCED_ZPREPASS_HIDIR_VELOCITY_RIGID",
-	"TECHNIQUE_INSTANCED_ZPREPASS_HIDIR_VELOCITY_SKINNED",
-	"TECHNIQUE_INSTANCED_BUILD_SHADOWMAP_DEPTH",
-	"TECHNIQUE_INSTANCED_BUILD_SHADOWMAP_COLOR",
-	"TECHNIQUE_INSTANCED_UNLIT",
-	"TECHNIQUE_INSTANCED_EMISSIVE",
-	"TECHNIQUE_INSTANCED_EMISSIVE_DFOG",
-	"TECHNIQUE_INSTANCED_EMISSIVE_SHADOW",
-	"TECHNIQUE_INSTANCED_EMISSIVE_SHADOW_DFOG",
-	"TECHNIQUE_INSTANCED_LIT",
-	"TECHNIQUE_INSTANCED_LIT_DIR",
-	"TECHNIQUE_INSTANCED_LIT_DIR_SHADOW",
-	"TECHNIQUE_INSTANCED_LIT_SPOT",
-	"TECHNIQUE_INSTANCED_LIT_SPOT_SHADOW",
-	"TECHNIQUE_INSTANCED_LIT_SPOT_SHADOW_CUCOLORIS",
-	"TECHNIQUE_INSTANCED_LIT_OMNI",
-	"TECHNIQUE_INSTANCED_LIT_OMNI_SHADOW",
-	"TECHNIQUE_INSTANCED_LIT_DYNAMIC_BRANCHING_CUCOLORIS",
-	"TECHNIQUE_INSTANCED_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS",
-	"TECHNIQUE_INSTANCED_LIT_DYNAMIC_BRANCHING",
-	"TECHNIQUE_INSTANCED_LIT_SUN_DYNAMIC_BRANCHING",
-	"TECHNIQUE_INSTANCED_LIT_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_DIR_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_DIR_SHADOW_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_SPOT_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_SPOT_SHADOW_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_SPOT_SHADOW_CUCOLORIS_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_OMNI_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_OMNI_SHADOW_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_DYNAMIC_BRANCHING_DFOG",
-	"TECHNIQUE_INSTANCED_LIT_SUN_DYNAMIC_BRANCHING_DFOG",
-	"TECHNIQUE_INSTANCED_LIGHT_SPOT",
-	"TECHNIQUE_INSTANCED_LIGHT_OMNI",
-	"TECHNIQUE_INSTANCED_LIGHT_SPOT_SHADOW",
-	"TECHNIQUE_INSTANCED_LIGHT_SPOT_SHADOW_CUCOLORIS",
-	"TECHNIQUE_INSTANCED_LIGHT_SPOT_STENCIL",
-	"TECHNIQUE_INSTANCED_LIGHT_OMNI_STENCIL",
-	"TECHNIQUE_INSTANCED_LIGHT_SPOT_DFOG",
-	"TECHNIQUE_INSTANCED_LIGHT_OMNI_DFOG",
-	"TECHNIQUE_INSTANCED_LIGHT_SPOT_SHADOW_DFOG",
-	"TECHNIQUE_INSTANCED_LIGHT_SPOT_SHADOW_CUCOLORIS_DFOG",
-	"TECHNIQUE_INSTANCED_LIGHT_SPOT_STENCIL_DFOG",
-	"TECHNIQUE_INSTANCED_LIGHT_OMNI_STENCIL_DFOG",
-	"TECHNIQUE_INSTANCED_FAKELIGHT_NORMAL",
-	"TECHNIQUE_INSTANCED_FAKELIGHT_VIEW",
-	"TECHNIQUE_INSTANCED_SUNLIGHT_PREVIEW",
-	"TECHNIQUE_INSTANCED_CASE_TEXTURE",
-	"TECHNIQUE_INSTANCED_WIREFRAME_SOLID",
-	"TECHNIQUE_INSTANCED_WIREFRAME_SHADED",
-	"TECHNIQUE_INSTANCED_THERMAL",
-	"TECHNIQUE_INSTANCED_CTQ",
-	"TECHNIQUE_INSTANCED_VELOCITY_RIGID",
-	"TECHNIQUE_INSTANCED_VELOCITY_SKINNED",
-	"TECHNIQUE_INSTANCED_DEBUG_BUMPMAP",
-	"TECHNIQUE_SUBDIV_PATCH_ZPREPASS",
-	"TECHNIQUE_SUBDIV_PATCH_ZPREPASS_VELOCITY_RIGID",
-	"TECHNIQUE_SUBDIV_PATCH_ZPREPASS_VELOCITY_SKINNED",
-	"TECHNIQUE_SUBDIV_PATCH_ZPREPASS_HIDIR",
-	"TECHNIQUE_SUBDIV_PATCH_ZPREPASS_HIDIR_VELOCITY_RIGID",
-	"TECHNIQUE_SUBDIV_PATCH_ZPREPASS_HIDIR_VELOCITY_SKINNED",
-	"TECHNIQUE_SUBDIV_PATCH_BUILD_SHADOWMAP_DEPTH",
-	"TECHNIQUE_SUBDIV_PATCH_BUILD_SHADOWMAP_COLOR",
-	"TECHNIQUE_SUBDIV_PATCH_UNLIT",
-	"TECHNIQUE_SUBDIV_PATCH_EMISSIVE",
-	"TECHNIQUE_SUBDIV_PATCH_EMISSIVE_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_EMISSIVE_SHADOW",
-	"TECHNIQUE_SUBDIV_PATCH_EMISSIVE_SHADOW_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_DIR",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_DIR_SHADOW",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT_SHADOW",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT_SHADOW_CUCOLORIS",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_OMNI",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_OMNI_SHADOW",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_DYNAMIC_BRANCHING_CUCOLORIS",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_DYNAMIC_BRANCHING",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_SUN_DYNAMIC_BRANCHING",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_DIR_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_DIR_SHADOW_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT_SHADOW_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_SPOT_SHADOW_CUCOLORIS_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_OMNI_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_OMNI_SHADOW_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_DYNAMIC_BRANCHING_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIT_SUN_DYNAMIC_BRANCHING_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_OMNI",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_SHADOW",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_SHADOW_CUCOLORIS",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_STENCIL",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_OMNI_STENCIL",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_OMNI_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_SHADOW_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_SHADOW_CUCOLORIS_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_SPOT_STENCIL_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_LIGHT_OMNI_STENCIL_DFOG",
-	"TECHNIQUE_SUBDIV_PATCH_FAKELIGHT_NORMAL",
-	"TECHNIQUE_SUBDIV_PATCH_FAKELIGHT_VIEW",
-	"TECHNIQUE_SUBDIV_PATCH_SUNLIGHT_PREVIEW",
-	"TECHNIQUE_SUBDIV_PATCH_CASE_TEXTURE",
-	"TECHNIQUE_SUBDIV_PATCH_WIREFRAME_SOLID",
-	"TECHNIQUE_SUBDIV_PATCH_WIREFRAME_SHADED",
-	"TECHNIQUE_SUBDIV_PATCH_THERMAL",
-	"TECHNIQUE_SUBDIV_PATCH_CTQ",
-	"TECHNIQUE_SUBDIV_PATCH_VELOCITY_RIGID",
-	"TECHNIQUE_SUBDIV_PATCH_VELOCITY_SKINNED",
-	"TECHNIQUE_SUBDIV_PATCH_DEBUG_BUMPMAP",
-	"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS",
-	"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS_VELOCITY_RIGID",
-	"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS_VELOCITY_SKINNED",
-	"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS_HIDIR",
-	"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS_HIDIR_VELOCITY_RIGID",
-	"TECHNIQUE_NO_DISPLACEMENT_ZPREPASS_HIDIR_VELOCITY_SKINNED",
-	"TECHNIQUE_NO_DISPLACEMENT_BUILD_SHADOWMAP_DEPTH",
-	"TECHNIQUE_NO_DISPLACEMENT_BUILD_SHADOWMAP_COLOR",
-	"TECHNIQUE_NO_DISPLACEMENT_UNLIT",
-	"TECHNIQUE_NO_DISPLACEMENT_EMISSIVE",
-	"TECHNIQUE_NO_DISPLACEMENT_EMISSIVE_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_EMISSIVE_SHADOW",
-	"TECHNIQUE_NO_DISPLACEMENT_EMISSIVE_SHADOW_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_DIR",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_DIR_SHADOW",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT_SHADOW",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT_SHADOW_CUCOLORIS",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_OMNI",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_OMNI_SHADOW",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_DYNAMIC_BRANCHING_CUCOLORIS",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_DYNAMIC_BRANCHING",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_SUN_DYNAMIC_BRANCHING",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_DIR_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_DIR_SHADOW_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT_SHADOW_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_SPOT_SHADOW_CUCOLORIS_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_OMNI_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_OMNI_SHADOW_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_SUN_DYNAMIC_BRANCHING_CUCOLORIS_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_DYNAMIC_BRANCHING_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIT_SUN_DYNAMIC_BRANCHING_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_OMNI",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_SHADOW",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_SHADOW_CUCOLORIS",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_STENCIL",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_OMNI_STENCIL",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_OMNI_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_SHADOW_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_SHADOW_CUCOLORIS_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_SPOT_STENCIL_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_LIGHT_OMNI_STENCIL_DFOG",
-	"TECHNIQUE_NO_DISPLACEMENT_FAKELIGHT_NORMAL",
-	"TECHNIQUE_NO_DISPLACEMENT_FAKELIGHT_VIEW",
-	"TECHNIQUE_NO_DISPLACEMENT_SUNLIGHT_PREVIEW",
-	"TECHNIQUE_NO_DISPLACEMENT_CASE_TEXTURE",
-	"TECHNIQUE_NO_DISPLACEMENT_WIREFRAME_SOLID",
-	"TECHNIQUE_NO_DISPLACEMENT_WIREFRAME_SHADED",
-	"TECHNIQUE_NO_DISPLACEMENT_THERMAL",
-	"TECHNIQUE_NO_DISPLACEMENT_CTQ",
-	"TECHNIQUE_NO_DISPLACEMENT_VELOCITY_RIGID",
-	"TECHNIQUE_NO_DISPLACEMENT_VELOCITY_SKINNED",
-	"TECHNIQUE_NO_DISPLACEMENT_DEBUG_BUMPMAP"
-	};
-
-	void dump_json(MaterialTechniqueSet* asset)
-	{
-		ordered_json data = {};
-
-		data["name"] = asset->name;
-		data["flags"] = asset->flags;
-		data["worldVertFormat"] = asset->worldVertFormat;
-		data["preDisplacementOnlyCount"] = asset->preDisplacementOnlyCount;
-		data["techniques"] = ordered_json::object();
-		for (auto technique = 0; technique < MaterialTechniqueType::TECHNIQUE_COUNT; technique++)
-		{
-			if (!asset->techniques[technique])
-			{
-				data["techniques"][g_TechniqueNames[technique]];
-				continue;
-			}
-			ordered_json technique_data = {};
-			technique_data["name"] = asset->techniques[technique]->hdr.name;
-			technique_data["flags"] = asset->techniques[technique]->hdr.flags;
-			technique_data["passes"] = ordered_json::array();
-			for (unsigned short pass = 0; pass < asset->techniques[technique]->hdr.passCount; pass++)
-			{
-				auto& techniquePass = asset->techniques[technique]->passArray[pass];
-				ordered_json pass_data = {};
-				pass_data["vertexShader"] = techniquePass.vertexShader ? techniquePass.vertexShader->name : "";
-				pass_data["vertexDecl"] = techniquePass.vertexDecl ? techniquePass.vertexDecl->name : "";
-				pass_data["hullShader"] = techniquePass.hullShader ? techniquePass.hullShader->name : "";
-				pass_data["domainShader"] = techniquePass.domainShader ? techniquePass.domainShader->name : "";
-				pass_data["pixelShader"] = techniquePass.pixelShader ? techniquePass.pixelShader->name : "";
-				pass_data["pixelOutputMask"] = techniquePass.pixelOutputMask;
-				pass_data["perPrimArgCount"] = techniquePass.perPrimArgCount;
-				pass_data["perObjArgCount"] = techniquePass.perObjArgCount;
-				pass_data["stableArgCount"] = techniquePass.stableArgCount;
-				pass_data["perPrimArgSize"] = techniquePass.perPrimArgSize;
-				pass_data["perObjArgSize"] = techniquePass.perObjArgSize;
-				pass_data["stableArgSize"] = techniquePass.stableArgSize;
-				pass_data["customBufferFlags"] = techniquePass.customBufferFlags;
-				pass_data["customSamplerFlags"] = techniquePass.customSamplerFlags;
-				pass_data["precompiledIndex"] = techniquePass.precompiledIndex;
-				pass_data["stageConfig"] = techniquePass.stageConfig;
-
-				pass_data["args"] = ordered_json::array();
-				for (auto arg = 0; arg <
-					techniquePass.perPrimArgCount +
-					techniquePass.perObjArgCount +
-					techniquePass.stableArgCount; arg++)
-				{
-					ordered_json arg_data = {};
-					arg_data["type"] = techniquePass.args[arg].type;
-					arg_data["shader"] = techniquePass.args[arg].shader;
-					arg_data["dest"] = techniquePass.args[arg].dest;
-					if (techniquePass.args[arg].type == MTL_ARG_LITERAL_CONST)
-					{
-						arg_data["literalConst"] = ordered_json::array();
-						for (auto i = 0; i < 4; i++)
-						{
-							arg_data["literalConst"].push_back(techniquePass.args[arg].u.literalConst[i]);
-						}
-					}
-					else if (techniquePass.args[arg].type == MTL_ARG_CODE_CONST)
-					{
-						arg_data["codeConstIndex"] = techniquePass.args[arg].u.codeConst.index;
-						arg_data["codeConstFirstRow"] = techniquePass.args[arg].u.codeConst.firstRow;
-						arg_data["codeConstRowCount"] = techniquePass.args[arg].u.codeConst.rowCount;
-					}
-					else if (techniquePass.args[arg].type == MTL_ARG_MATERIAL_CONST ||
-						techniquePass.args[arg].type == MTL_ARG_MATERIAL_TEXTURE ||
-						techniquePass.args[arg].type == MTL_ARG_MATERIAL_SAMPLER)
-					{
-						arg_data["nameHash"] = techniquePass.args[arg].u.nameHash;
-					}
-					else
-					{
-						arg_data["codeSampler"] = techniquePass.args[arg].u.codeSampler;
-					}
-					pass_data["args"].push_back(arg_data);
-				}
-				
-				technique_data["passes"].push_back(pass_data);
-			}
-			data["techniques"][g_TechniqueNames[technique]] = technique_data;
-		}
-
-		const auto path = "dumped_techsets\\"s + asset->name + ".techset.json";
-		auto file = filesystem::file(path);
-		file.open("wb");
-		auto fp = file.get_fp();
-		if (fp)
-		{
-			const auto json_dump = data.dump(4);
-			file.write(json_dump.data(), json_dump.size(), 1);
-			file.close();
-		}
-	}
-#endif
 
 	void techset::dump_constant_buffer_indexes(const std::string& techset, const std::string& material, unsigned char* cbi)
 	{
@@ -1832,7 +2056,7 @@ namespace zonetool::h1
 	void techset::dump(MaterialTechniqueSet* asset)
 	{
 #ifdef DUMP_JSON
-		dump_json(asset);
+		json_::dump(asset);
 #endif
 
 		const auto path = "techsets\\"s + asset->name + ".techset";

@@ -12,8 +12,6 @@ namespace zonetool::h1
 		static int indentCounter;
 		static FILE* fp;
 
-		static void dump_menudef(menuDef_t* asset);
-
 		static void emit_menu_def(menuDef_t* asset);
 		static void emit_item_def(itemDef_t* item);
 		static void emit_window_def(windowDef_t* window, bool is_item);

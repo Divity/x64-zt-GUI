@@ -51,7 +51,6 @@ namespace zonetool::iw7
 		
 		asset->draw.reflectionProbeData.reflectionProbeArrayImage = read.read_asset<GfxImage>();
 		asset->draw.reflectionProbeData.probeRelightingData = read.read_array<GfxReflectionProbeRelightingData>();
-		asset->draw.reflectionProbeData.reflectionProbeGBufferImages = mem->allocate<GfxImage*>(asset->draw.reflectionProbeData.reflectionProbeGBufferImageCount);
 		asset->draw.reflectionProbeData.reflectionProbeGBufferImages = read.read_array<GfxImage*>();
 		for (unsigned int i = 0; i < asset->draw.reflectionProbeData.reflectionProbeGBufferImageCount; i++)
 		{
@@ -113,12 +112,12 @@ namespace zonetool::iw7
 		asset->lightGrid.tree.p_leafTable = read.read_array<unsigned char>();
 
 		asset->lightGrid.probeData.gpuVisibleProbePositions = read.read_array<GfxGpuLightGridProbePosition>();
-		asset->lightGrid.probeData.gpuVisibleProbesData = read.read_array<GfxProbeData>();
+		asset->lightGrid.probeData.gpuVisibleProbesData = read.read_array<GfxSHProbeData>();
 		asset->lightGrid.probeData.gpuVisibleProbesBuffer = nullptr;
 		asset->lightGrid.probeData.gpuVisibleProbesView = nullptr;
 		asset->lightGrid.probeData.gpuVisibleProbesRWView = nullptr;
 
-		asset->lightGrid.probeData.probes = read.read_array<GfxProbeData>();
+		asset->lightGrid.probeData.probes = read.read_array<GfxSHProbeData>();
 		asset->lightGrid.probeData.probesBuffer = nullptr;
 		asset->lightGrid.probeData.probesView = nullptr;
 		asset->lightGrid.probeData.probesRWView = nullptr;
@@ -185,12 +184,12 @@ namespace zonetool::iw7
 			asset->heightfields[i].image = read.read_asset<GfxImage>();
 		}
 
-		asset->unk01.unk01 = nullptr;
-		asset->unk01.unk01Count = 0;
-		asset->unk01.unk02 = nullptr;
-		asset->unk01.unk02Count = 0;
+		asset->lightLists.surfaceListOffsets = nullptr;
+		asset->lightLists.surfaceListOffsetCount = 0;
+		asset->lightLists.smodelListOffsets = nullptr;
+		asset->lightLists.smodelListOffsetCount = 0;
 
-		asset->unk01.unk03 = read.read_array<unsigned short>();
+		asset->lightLists.lists = read.read_array<unsigned short>();
 
 		asset->models = read.read_array<GfxBrushModel>();
 
@@ -1007,23 +1006,21 @@ namespace zonetool::iw7
 			buf->clear_pointer(&dest->heightfields);
 		}
 
-		if (data->unk01.unk01)
+		if (data->lightLists.surfaceListOffsets)
 		{
-			dest->unk01.unk01 = nullptr;
-			dest->unk01.unk01Count = 0;
+			dest->lightLists.surfaceListOffsets = nullptr;
 		}
 
-		if (data->unk01.unk02)
+		if (data->lightLists.smodelListOffsets)
 		{
-			dest->unk01.unk02 = nullptr;
-			dest->unk01.unk02Count = 0;
+			dest->lightLists.smodelListOffsets = nullptr;
 		}
 
-		if (data->unk01.unk03)
+		if (data->lightLists.lists)
 		{
 			buf->align(1);
-			buf->write(data->unk01.unk03, data->unk01.unk03Count);
-			buf->clear_pointer(&dest->unk01.unk03);
+			buf->write(data->lightLists.lists, data->lightLists.listsSize);
+			buf->clear_pointer(&dest->lightLists.lists);
 		}
 
 		if (data->models)
@@ -1754,7 +1751,7 @@ namespace zonetool::iw7
 			write.dump_asset(asset->heightfields[i].image);
 		}
 
-		write.dump_array(asset->unk01.unk03, asset->unk01.unk03Count);
+		write.dump_array(asset->lightLists.lists, asset->lightLists.listsSize);
 
 		write.dump_array(asset->models, asset->modelCount);
 

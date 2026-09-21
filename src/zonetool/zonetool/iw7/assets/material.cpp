@@ -3,7 +3,7 @@
 
 #include "techset.hpp"
 
-#include "zonetool/utils/iwi.hpp"
+#include "zonetool/utils/iwi/iwi.hpp"
 
 #define MATERIAL_DUMP_STRING(entry) \
 	matdata[#entry] = std::string(asset->entry);
@@ -78,6 +78,93 @@ namespace zonetool::iw7
 					COPY_CONSTANT_TABLE_VALUES(hsData, hsOffsetData);
 					COPY_CONSTANT_TABLE_VALUES(dsData, dsOffsetData);
 					COPY_CONSTANT_TABLE_VALUES(psData, psOffsetData);
+				}
+			}
+		}
+
+		static bool is_valid_rasterizer_state(unsigned char value)
+		{
+			switch (value)
+			{
+			case 1: case 2: case 3:
+			case 5: case 6:
+			case 9: case 10:
+			case 13: case 14:
+			case 26:
+				return true;
+			default:
+				return false;
+			}
+		}
+
+		void fixup_statebits_from_stateflags(Material* asset)
+		{
+			static constexpr int ignoredTechniques[] = {
+				TECHNIQUE_BUILD_SHADOWMAP_DEPTH,
+				TECHNIQUE_BUILD_SHADOWMAP_COLOR,
+				TECHNIQUE_DEBUG_BUMPMAP,
+
+				TECHNIQUE_INSTANCED_BUILD_SHADOWMAP_DEPTH,
+				TECHNIQUE_INSTANCED_BUILD_SHADOWMAP_COLOR,
+				TECHNIQUE_INSTANCED_DEBUG_BUMPMAP,
+
+				TECHNIQUE_SUBDIV_PATCH_BUILD_SHADOWMAP_DEPTH,
+				TECHNIQUE_SUBDIV_PATCH_BUILD_SHADOWMAP_COLOR,
+				TECHNIQUE_SUBDIV_PATCH_DEBUG_BUMPMAP,
+
+				TECHNIQUE_NO_DISPLACEMENT_BUILD_SHADOWMAP_DEPTH,
+				TECHNIQUE_NO_DISPLACEMENT_BUILD_SHADOWMAP_COLOR,
+				TECHNIQUE_NO_DISPLACEMENT_DEBUG_BUMPMAP,
+			};
+
+			const unsigned int state_flags = asset->stateFlags & STATE_FLAG_CULL_MASK;
+
+			for (int i = 0; i < asset->stateBitsCount; ++i)
+			{
+				bool isIgnored = std::any_of(std::begin(ignoredTechniques), std::end(ignoredTechniques),
+					[&](int index) { return asset->stateBitsEntry[index] == i; });
+
+				if (isIgnored)
+					continue;
+
+				auto& stateEntry = asset->stateBitsTable[i];
+
+				const unsigned int old_flags = stateEntry.loadBits[0] & GFXS0_CULL_MASK;
+				const unsigned char old_rasterizer_flags = stateEntry.rasterizerState & RASTERIZER_STATE_CULL_MASK;
+
+				unsigned int new_flags = 0;
+				unsigned char new_rasterizer_flags = 0;
+
+				if (state_flags == 0)
+				{
+					new_flags = GFXS0_CULL_NONE;
+					new_rasterizer_flags = RASTERIZER_STATE_CULL_NONE;
+				}
+				else if ((state_flags & STATE_FLAG_CULL_BACK) == STATE_FLAG_CULL_BACK)
+				{
+					new_flags = GFXS0_CULL_BACK;
+					new_rasterizer_flags = RASTERIZER_STATE_CULL_BACK;
+				}
+				else if ((state_flags & STATE_FLAG_CULL_FRONT) == STATE_FLAG_CULL_FRONT)
+				{
+					new_flags = GFXS0_CULL_FRONT;
+					new_rasterizer_flags = RASTERIZER_STATE_CULL_FRONT;
+				}
+				else
+				{
+					new_flags = GFXS0_CULL_NONE;
+					new_rasterizer_flags = RASTERIZER_STATE_CULL_NONE;
+					__debugbreak();
+				}
+
+				if (new_flags != old_flags || new_rasterizer_flags != old_rasterizer_flags)
+				{
+					const unsigned char desired =
+						(stateEntry.rasterizerState & ~RASTERIZER_STATE_CULL_MASK) | new_rasterizer_flags;
+
+					stateEntry.loadBits[0] = (stateEntry.loadBits[0] & ~GFXS0_CULL_MASK) | new_flags;
+					stateEntry.rasterizerState =
+						is_valid_rasterizer_state(desired) ? desired : new_rasterizer_flags;
 				}
 			}
 		}
@@ -239,6 +326,8 @@ namespace zonetool::iw7
 			mat->stateBitsCount = static_cast<unsigned char>(max_state_index + 1);
 		}
 
+		fixup_statebits_from_stateflags(mat);
+
 		return mat;
 	}
 
@@ -254,6 +343,7 @@ namespace zonetool::iw7
 		}
 
 		this->asset_ = this->parse(name, mem);
+
 		if (!this->asset_)
 		{
 			this->asset_ = db_find_x_asset_header_safe(XAssetType(this->type()), this->name_.data()).material;

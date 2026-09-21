@@ -1,36 +1,27 @@
 #include <std_include.hpp>
 #include "menulist.hpp"
-
-// trash code, ignore all warnings
-#pragma warning( push )
-#pragma warning( disable : 4309)
-#pragma warning( disable : 4146)
-#pragma warning( disable : 4244)
-#pragma warning( disable : 4267)
-#pragma warning( disable : 4311)
-#pragma warning( disable : 4302)
-#pragma warning( disable : 4267)
-#pragma warning( disable : 4312)
-#pragma warning( disable : 4834)
-#pragma warning( disable : 4101)
-#pragma warning( disable : 4702)
-#pragma warning( disable : 4701)
-#pragma warning( disable : 4700)
+#include <stdexcept>
 
 namespace zonetool::h1
 {
 	/* windowDef_t->dynamicFlags */
-// 0x1
-#define WINDOWDYNAMIC_HASFOCUS		0x00000002
-#define WINDOWDYNAMIC_VISIBLE		0x00000004
-#define WINDOWDYNAMIC_FADEOUT		0x00000010
-#define WINDOWDYNAMIC_FADEIN		0x00000020
-// 0x40
-// 0x80
-#define WINDOWDYNAMIC_CLOSED		0x00000800
+#define WINDOWDYNAMIC_MOUSE_OVER_ITEM   0x00000001
+#define WINDOWDYNAMIC_HASFOCUS          0x00000002
+#define WINDOWDYNAMIC_VISIBLE           0x00000004
+// 0x8
+#define WINDOWDYNAMIC_FADEOUT           0x00000010
+#define WINDOWDYNAMIC_FADEIN            0x00000020
+#define WINDOWDYNAMIC_MOUSE_OVER_TEXT   0x00000040
+#define WINDOWDYNAMIC_CLOSING           0x00000080
+#define WINDOWDYNAMIC_SCROLL_UPARROW    0x00000100
+#define WINDOWDYNAMIC_SCROLL_DOWNARROW  0x00000200
+#define WINDOWDYNAMIC_SCROLL_THUMB      0x00000400
+#define WINDOWDYNAMIC_SCROLL_PAGEUP     0x00000800
+#define WINDOWDYNAMIC_SCROLL_PAGEDOWN   0x00001000
 // 0x2000
-#define WINDOWDYNAMIC_BACKCOLOR		0x00008000
-#define WINDOWDYNAMIC_FORECOLOR		0x00010000
+// 0x4000 loading/forcepaint
+#define WINDOWDYNAMIC_BACKCOLOR         0x00008000
+#define WINDOWDYNAMIC_FORECOLOR         0x00010000
 
 /* windowDef_t->staticFlags */
 #define WINDOWSTATIC_DECORATION					0x00100000
@@ -183,6 +174,8 @@ namespace zonetool::h1
 #define MAX_ITEMDEFS_PER_MENUDEF 512
 #define MAX_TOKENS_PER_STATEMENT 512
 #define MAX_EVENT_HANDLERS_PER_EVENT 200
+#define MAX_VALUES 64
+#define MAX_OPERATORS 64
 
 	static const char* g_expOperatorNames[]
 	{
@@ -541,7 +534,7 @@ namespace zonetool::h1
 		"getcommonplayerdatasplitscreen",
 		"getomnvar"
 	};
-	
+
 	const char* g_commandList[] =
 	{
 		"fadein",
@@ -680,7 +673,7 @@ namespace zonetool::h1
 		{ 18, "backcolor", "a" }
 	};
 
-	enum parseSkip_t : __int32
+	enum parseSkip_t : std::int32_t
 	{
 		SKIP_NO = 0x0,
 		SKIP_YES = 0x1,
@@ -690,7 +683,7 @@ namespace zonetool::h1
 	//punctuation
 	struct punctuation_s
 	{
-		const char* p;						//punctuation character(s)
+		const char* p;					//punctuation character(s)
 		int n;							//punctuation indication
 		punctuation_s* next;			//next punctuation
 	};
@@ -700,9 +693,9 @@ namespace zonetool::h1
 	{
 		char string[MAX_TOKEN];			//available token
 		int type;						//last read token type
-		int subtype;					//last read token sub type
+		std::uint64_t subtype;			//last read token sub type
 		unsigned int intvalue;			//integer value
-		long double floatvalue;			//floating point value
+		float floatvalue;				//floating point value
 		char* whitespace_p;				//start of white space before token
 		char* endwhitespace_p;			//start of white space before token
 		int line;						//line the token was on
@@ -720,7 +713,7 @@ namespace zonetool::h1
 		char* lastscript_p;				//script pointer before reading token
 		char* whitespace_p;				//begin of the white space
 		char* endwhitespace_p;			//end of the white space
-		int length;						//length of the script in bytes
+		std::size_t length;					//length of the script in bytes
 		int line;						//current line in script
 		int lastline;					//line before reading token
 		int tokenavailable;				//set by UnreadLastToken
@@ -840,7 +833,7 @@ namespace zonetool::h1
 		{"\\", 0x32, 0},
 		{"#", 0x33, 0},
 		{"$", 0x34, 0},
-		{"", 0, 0}
+		{0, 0, 0}
 	};
 
 	struct operator_s
@@ -854,7 +847,7 @@ namespace zonetool::h1
 	struct value_s
 	{
 		unsigned int intvalue;
-		long double floatvalue;
+		float floatvalue;
 		int parentheses;
 		struct value_s* prev, * next;
 	};
@@ -862,13 +855,13 @@ namespace zonetool::h1
 	struct parse_menudef_func
 	{
 		const char* keyword;
-		int(*func)(menuDef_t*/*, int*/);
+		bool(*func)(menuDef_t*/*, int*/);
 	};
 
 	struct parse_itemdef_func
 	{
 		const char* keyword;
-		int(*func)(itemDef_t*/*, int*/);
+		bool(*func)(itemDef_t*/*, int*/);
 	};
 
 	std::vector<parse_menudef_func> p_md_funcs;
@@ -1037,7 +1030,7 @@ namespace zonetool::h1
 		PrintSourceStack(source->scriptstack);
 	}
 
-	int PC_SourceFileAndLine(/*int handle,*/ char* filename, int* line)
+	int PC_SourceFileAndLine(char* filename, int* line)
 	{
 		if (!sourceFile)
 			return 0;
@@ -1050,7 +1043,7 @@ namespace zonetool::h1
 		return 1;
 	}
 
-	void PC_SourceError(/*int handle,*/ const char* format, ...)
+	void PC_SourceError(const char* format, ...)
 	{
 		int line;
 		char filename[128];
@@ -1063,7 +1056,7 @@ namespace zonetool::h1
 
 		filename[0] = '\0';
 		line = 0;
-		PC_SourceFileAndLine(/*handle,*/ filename, &line);
+		PC_SourceFileAndLine(filename, &line);
 		ZONETOOL_ERROR("Menu load error: %s, line %d: %s", filename, line, string);
 	}
 
@@ -1128,7 +1121,7 @@ namespace zonetool::h1
 
 	int PS_ReadEscapeCharacter(script_s* script, char* cha)
 	{
-		char c, val, i;
+		int c, val, i;
 
 		//step over the leading '\\'
 		script->script_p++;
@@ -1190,8 +1183,8 @@ namespace zonetool::h1
 		//step over the escape character or the last digit of the number
 		script->script_p++;
 		//store the escape character
-		*cha = c;
-		//succesfully read escape character
+		*cha = (char)c;
+		//successfully read escape character
 		return 1;
 	}
 
@@ -1302,7 +1295,7 @@ namespace zonetool::h1
 
 	int PS_ReadPunctuation(script_s* script, token_s* token)
 	{
-		int len;
+		std::size_t len;
 		const char* p;
 		punctuation_s* punc;
 
@@ -1354,9 +1347,9 @@ namespace zonetool::h1
 	}
 
 	void NumberValue(char* string, int subtype, unsigned int* intvalue,
-		long double* floatvalue)
+		float* floatvalue)
 	{
-		unsigned long int dotfound = 0;
+		unsigned int dotfound = 0;
 
 		*intvalue = 0;
 		*floatvalue = 0;
@@ -1373,22 +1366,22 @@ namespace zonetool::h1
 				}
 				if (dotfound)
 				{
-					*floatvalue = *floatvalue + (long double)(*string - '0') /
-						(long double)dotfound;
+					*floatvalue = *floatvalue + (float)(*string - '0') /
+						(float)dotfound;
 					dotfound *= 10;
 				}
 				else
 				{
-					*floatvalue = *floatvalue * 10.0 + (long double)(*string - '0');
+					*floatvalue = *floatvalue * 10.0f + (float)(*string - '0');
 				}
 				string++;
 			}
-			*intvalue = (unsigned long)*floatvalue;
+			*intvalue = (unsigned int)*floatvalue;
 		}
 		else if (subtype & TT_DECIMAL)
 		{
 			while (*string) *intvalue = *intvalue * 10 + (*string++ - '0');
-			*floatvalue = *intvalue;
+			*floatvalue = (float)*intvalue;
 		}
 		else if (subtype & TT_HEX)
 		{
@@ -1402,21 +1395,21 @@ namespace zonetool::h1
 				else *intvalue += *string - '0';
 				string++;
 			}
-			*floatvalue = *intvalue;
+			*floatvalue = (float)*intvalue;
 		}
 		else if (subtype & TT_OCTAL)
 		{
 			//step over the first zero
 			string += 1;
 			while (*string) *intvalue = (*intvalue << 3) + (*string++ - '0');
-			*floatvalue = *intvalue;
+			*floatvalue = (float)*intvalue;
 		}
 		else if (subtype & TT_BINARY)
 		{
 			//step over the leading 0b or 0B
 			string += 2;
 			while (*string) *intvalue = (*intvalue << 1) + (*string++ - '0');
-			*floatvalue = *intvalue;
+			*floatvalue = (float)*intvalue;
 		}
 	}
 
@@ -1425,8 +1418,6 @@ namespace zonetool::h1
 		int len = 0, i;
 		int octal, dot;
 		char c;
-		//	unsigned long int intvalue = 0;
-		//	long double floatvalue = 0;
 
 		token->type = TT_NUMBER;
 		//check for a hexadecimal number
@@ -1514,7 +1505,7 @@ namespace zonetool::h1
 			}
 		}
 		token->string[len] = '\0';
-		NumberValue(token->string, token->subtype, &token->intvalue, &token->floatvalue);
+		NumberValue(token->string, token->subtype & 0xFFFFFFFF, &token->intvalue, &token->floatvalue);
 		if (!(token->subtype & TT_FLOAT)) token->subtype |= TT_INTEGER;
 		return 1;
 	}
@@ -1679,8 +1670,8 @@ namespace zonetool::h1
 		}
 		else
 		{
-			ZONETOOL_FATAL("EXE_ERR_OUT_OF_MEMORY");
-			copy = 0;
+			throw std::runtime_error("Out of memory.");
+			//copy = 0;
 		}
 		return copy;
 	}
@@ -1705,13 +1696,8 @@ namespace zonetool::h1
 		PC_UnreadSourceToken(source, &source->token);
 	}
 
-	void PC_UnreadLastTokenHandle(/*int handle*/)
+	void PC_UnreadLastTokenHandle()
 	{
-		//if (handle >= 1 && handle < 64)
-		//{
-		//	if (sourceFiles[handle])
-		//		PC_UnreadLastToken(sourceFiles[handle]);
-		//}
 		if (sourceFile)
 			PC_UnreadLastToken(sourceFile);
 	}
@@ -1738,7 +1724,7 @@ namespace zonetool::h1
 		hash = 0;
 		for (i = 0; name[i]; ++i)
 			hash += (i + 119) * name[i];
-		return ((unsigned __int16)(hash >> 20) ^ (unsigned __int16)(hash ^ (hash >> 10))) & 0x3FF;
+		return ((unsigned short)(hash >> 20) ^ (unsigned short)(hash ^ (hash >> 10))) & 0x3FF;
 	}
 
 	define_s* PC_FindHashedDefine(define_s** definehash, char* name)
@@ -1757,7 +1743,7 @@ namespace zonetool::h1
 	int PC_ExpandBuiltinDefine(source_s* source, token_s* deftoken, define_s* define, token_s** firsttoken, token_s** lasttoken)
 	{
 		token_s* token;
-		__int64 t;	// time_t t;
+		time_t t;
 		char* curtime;
 
 		token = PC_CopyToken(deftoken);
@@ -1766,7 +1752,7 @@ namespace zonetool::h1
 		case BUILTIN_LINE:
 			sprintf(token->string, "%d", deftoken->line);
 			token->intvalue = deftoken->line;
-			token->floatvalue = deftoken->line;
+			token->floatvalue = (float)deftoken->line;
 			token->type = TT_NUMBER;
 			token->subtype = TT_DECIMAL | TT_INTEGER;
 			*firsttoken = token;
@@ -1814,14 +1800,8 @@ namespace zonetool::h1
 
 	int PC_ReadDefineParms(source_s* source, define_s* define, token_s** parms, int maxparms)
 	{
-		token_s* t;
-		int done;
-		int lastcomma;
-		int indent;
-		int numparms;
 		token_s token;
 		int i;
-		token_s* last;
 
 		if (!PC_ReadSourceToken(source, &token))
 		{
@@ -1841,11 +1821,11 @@ namespace zonetool::h1
 			SourceError(source, "define %s missing parms", define->name);
 			return 0;
 		}
-		done = 0;
-		numparms = 0;
-		indent = 0;
-	LABEL_11:
-		if (!done)
+
+		int done = 0;
+		int numparms = 0;
+		int indent = 0;
+		while (!done)
 		{
 			if (numparms >= maxparms)
 			{
@@ -1858,8 +1838,8 @@ namespace zonetool::h1
 				return 0;
 			}
 			parms[numparms] = 0;
-			lastcomma = 1;
-			last = 0;
+			int lastcomma = 1;
+			token_s* last = 0;
 			while (1)
 			{
 				if (!PC_ReadSourceToken(source, &token))
@@ -1871,7 +1851,7 @@ namespace zonetool::h1
 				{
 					if (lastcomma)
 						SourceWarning(source, "too many comma's");
-					goto LABEL_38;
+					break;
 				}
 				lastcomma = 0;
 				if (!strcmp(token.string, "("))
@@ -1885,15 +1865,13 @@ namespace zonetool::h1
 						if (!parms[define->numparms - 1])
 							SourceWarning(source, "too few define parms to %s", define->name);
 						done = 1;
-					LABEL_38:
-						++numparms;
-						goto LABEL_11;
+						break;
 					}
 					--indent;
 				}
 				if (numparms < define->numparms)
 				{
-					t = PC_CopyToken(&token);
+					token_s* t = PC_CopyToken(&token);
 					t->next = 0;
 					if (last)
 						last->next = t;
@@ -1902,6 +1880,7 @@ namespace zonetool::h1
 					last = t;
 				}
 			}
+			++numparms;
 		}
 		return 1;
 	}
@@ -1980,7 +1959,7 @@ namespace zonetool::h1
 		for (dt = define->tokens; dt; dt = dt->next)
 		{
 			parmnum = -1;
-			if (dt->type == 4)
+			if (dt->type == TT_NAME)
 				parmnum = PC_FindDefineParm(define, dt->string);
 			if (parmnum < 0)
 			{
@@ -2125,96 +2104,72 @@ namespace zonetool::h1
 		return 0;
 	}
 
-	int PC_EvaluateTokens(source_s* source, token_s* tokens, int* intvalue, long double* floatvalue, int integer)
+	int PC_EvaluateTokens(source_s* source, token_s* tokens, int* intvalue, float* floatvalue, int integer)
 	{
-		BOOL v6;
-		int v7;
-		BOOL v8;
-		int v9;
-		int v10;
-		operator_s* o;
-		operator_s* oa;
-		operator_s* ob;
-		double questmarkfloatvalue;
-		operator_s* lastoperator;
-		value_s value_heap[64];
-		operator_s* firstoperator;
-		int lastwasvalue;
-		value_s* v2;
-		int error;
-		int negativevalue;
-		operator_s operator_heap[64];
-		value_s* firstvalue;
-		value_s* v1;
-		int numvalues;
-		int parentheses;
-		int numoperators;
-		value_s* v;
-		value_s* lastvalue;
-		int lastoperatortype;
-		int brace;
-		int questmarkintvalue;
-		int gotquestmarkvalue;
+		operator_s operator_heap[MAX_OPERATORS];
+		value_s value_heap[MAX_VALUES];
+		operator_s* firstoperator = nullptr;
+		operator_s* lastoperator = nullptr;
+		value_s* firstvalue = nullptr;
+		value_s* lastvalue = nullptr;
+		int numoperators = 0;
+		int numvalues = 0;
+		int lastwasvalue = 0;
+		int negativevalue = 0;
+		int parentheses = 0;
+		int brace = 0;
+		int error = 0;
 
-		brace = 0;
-		parentheses = 0;
-		error = 0;
-		lastwasvalue = 0;
-		negativevalue = 0;
-		questmarkintvalue = 0;
-		gotquestmarkvalue = 0;
-		lastoperatortype = 0;
-		numoperators = 0;
-		numvalues = 0;
-		lastoperator = 0;
-		firstoperator = 0;
-		lastvalue = 0;
-		firstvalue = 0;
 		if (intvalue)
 			*intvalue = 0;
 		if (floatvalue)
 			*floatvalue = 0.0f;
-		while (tokens)
+
+		for (; tokens && !error; tokens = tokens->next)
 		{
-			v10 = tokens->type;
-			switch (v10)
+			switch (tokens->type)
 			{
-			case 3:
+			case TT_NUMBER:
 				if (lastwasvalue)
-					goto LABEL_37;
-				if (numvalues >= 64)
 				{
-				LABEL_24:
+					SourceError(source, "syntax error in #if/#elif");
+					error = 1;
+					break;
+				}
+				if (numvalues >= MAX_VALUES)
+				{
 					SourceError(source, "out of value space");
 					error = 1;
 					break;
 				}
-				v = &value_heap[numvalues++];
-				if (negativevalue)
 				{
-					v->intvalue = -tokens->intvalue;
-					v->floatvalue = -tokens->floatvalue;
+					value_s* value = &value_heap[numvalues++];
+					if (negativevalue)
+					{
+						value->intvalue = -(int)tokens->intvalue;
+						value->floatvalue = -tokens->floatvalue;
+					}
+					else
+					{
+						value->intvalue = tokens->intvalue;
+						value->floatvalue = tokens->floatvalue;
+					}
+					value->parentheses = parentheses;
+					value->next = nullptr;
+					value->prev = lastvalue;
+					if (lastvalue)
+						lastvalue->next = value;
+					else
+						firstvalue = value;
+					lastvalue = value;
 				}
-				else
-				{
-					v->intvalue = tokens->intvalue;
-					v->floatvalue = tokens->floatvalue;
-				}
-				v->parentheses = parentheses;
-				v->next = 0;
-				v->prev = lastvalue;
-				if (lastvalue)
-					lastvalue->next = v;
-				else
-					firstvalue = v;
-				lastvalue = v;
 				lastwasvalue = 1;
 				negativevalue = 0;
 				break;
-			case 4:
+
+			case TT_NAME:
 				if (lastwasvalue || negativevalue)
 				{
-				LABEL_37:
 					SourceError(source, "syntax error in #if/#elif");
 					error = 1;
 					break;
@@ -2231,30 +2186,34 @@ namespace zonetool::h1
 					brace = 1;
 					tokens = tokens->next;
 				}
-				if (tokens && tokens->type == 4)
+				if (tokens && tokens->type == TT_NAME)
 				{
-					if (numvalues >= 64)
-						goto LABEL_24;
-					v = &value_heap[numvalues++];
+					if (numvalues >= MAX_VALUES)
+					{
+						SourceError(source, "out of value space");
+						error = 1;
+						break;
+					}
+					value_s* value = &value_heap[numvalues++];
 					if (PC_FindHashedDefine(source->definehash, tokens->string))
 					{
-						v->intvalue = 1;
-						v->floatvalue = 1.0f;
+						value->intvalue = 1;
+						value->floatvalue = 1.0f;
 					}
 					else
 					{
-						v->intvalue = 0;
-						v->floatvalue = 0.0f;
+						value->intvalue = 0;
+						value->floatvalue = 0.0f;
 					}
-					v->parentheses = parentheses;
-					v->next = 0;
-					v->prev = lastvalue;
+					value->parentheses = parentheses;
+					value->next = nullptr;
+					value->prev = lastvalue;
 					if (lastvalue)
-						lastvalue->next = v;
+						lastvalue->next = value;
 					else
-						firstvalue = v;
-					lastvalue = v;
-					if (!brace || (tokens = tokens->next) != 0 && !strcmp(tokens->string, ")"))
+						firstvalue = value;
+					lastvalue = value;
+					if (!brace || ((tokens = tokens->next) != nullptr && !strcmp(tokens->string, ")")))
 					{
 						brace = 0;
 						lastwasvalue = 1;
@@ -2274,17 +2233,18 @@ namespace zonetool::h1
 					error = 1;
 				}
 				break;
-			case 5:
+
+			case TT_PUNCTUATION:
 				if (negativevalue)
 				{
 					SourceError(source, "misplaced minus sign in #if/#elif");
 					error = 1;
 				}
-				else if (tokens->subtype == 44)
+				else if (tokens->subtype == P_PARENTHESESOPEN)
 				{
 					++parentheses;
 				}
-				else if (tokens->subtype == 45)
+				else if (tokens->subtype == P_PARENTHESESCLOSE)
 				{
 					if (--parentheses < 0)
 					{
@@ -2293,13 +2253,13 @@ namespace zonetool::h1
 					}
 				}
 				else if (!integer
-					&& (tokens->subtype == 35
-						|| tokens->subtype == 28
-						|| tokens->subtype == 21
-						|| tokens->subtype == 22
-						|| tokens->subtype == 32
-						|| tokens->subtype == 33
-						|| tokens->subtype == 34))
+					&& (tokens->subtype == P_BIN_NOT
+						|| tokens->subtype == P_MOD
+						|| tokens->subtype == P_RSHIFT
+						|| tokens->subtype == P_LSHIFT
+						|| tokens->subtype == P_BIN_AND
+						|| tokens->subtype == P_BIN_OR
+						|| tokens->subtype == P_BIN_XOR))
 				{
 					SourceError(source, "illigal operator %s on floating point operands", tokens->string);
 					error = 1;
@@ -2308,47 +2268,41 @@ namespace zonetool::h1
 				{
 					switch (tokens->subtype)
 					{
-					case 5:
-					case 6:
-					case 7:
-					case 8:
-					case 9:
-					case 0xA:
-					case 0x15:
-					case 0x16:
-					case 0x1A:
-					case 0x1B:
-					case 0x1C:
-					case 0x1D:
-					case 0x20:
-					case 0x21:
-					case 0x22:
-					case 0x25:
-					case 0x26:
-					case 0x2A:
-					case 0x2B:
-						goto $LN82;
-					case 0x10:
-					case 0x11:
+					case P_LOGIC_AND:
+					case P_LOGIC_OR:
+					case P_LOGIC_GEQ:
+					case P_LOGIC_LEQ:
+					case P_LOGIC_EQ:
+					case P_LOGIC_UNEQ:
+					case P_RSHIFT:
+					case P_LSHIFT:
+					case P_MUL:
+					case P_DIV:
+					case P_MOD:
+					case P_ADD:
+					case P_BIN_AND:
+					case P_BIN_OR:
+					case P_BIN_XOR:
+					case P_LOGIC_GREATER:
+					case P_LOGIC_LESS:
+					case P_COLON:
+					case P_QUESTIONMARK:
+						if (!lastwasvalue)
+						{
+							SourceError(source, "operator %s after operator in #if/#elif", tokens->string);
+							error = 1;
+						}
+						break;
+					case P_INC:
+					case P_DEC:
 						SourceError(source, "++ or -- used in #if/#elif");
 						break;
-					case 0x1E:
-						if (lastwasvalue)
-						{
-						$LN82:
-							if (!lastwasvalue)
-							{
-								SourceError(source, "operator %s after operator in #if/#elif", tokens->string);
-								error = 1;
-							}
-						}
-						else
-						{
+					case P_SUB:
+						if (!lastwasvalue)
 							negativevalue = 1;
-						}
 						break;
-					case 0x23:
-					case 0x24:
+					case P_BIN_NOT:
+					case P_LOGIC_NOT:
 						if (lastwasvalue)
 						{
 							SourceError(source, "! or ~ after value in #if/#elif");
@@ -2362,67 +2316,66 @@ namespace zonetool::h1
 					}
 					if (!error && !negativevalue)
 					{
-						if (numoperators < 64)
-						{
-							o = &operator_heap[numoperators++];
-							o->op = tokens->subtype;
-							o->priority = PC_OperatorPriority(tokens->subtype);
-							o->parentheses = parentheses;
-							o->next = 0;
-							o->prev = lastoperator;
-							if (lastoperator)
-								lastoperator->next = o;
-							else
-								firstoperator = o;
-							lastoperator = o;
-							lastwasvalue = 0;
-						}
-						else
+						if (numoperators >= MAX_OPERATORS)
 						{
 							SourceError(source, "out of operator space");
 							error = 1;
 						}
+						else
+						{
+							operator_s* op = &operator_heap[numoperators++];
+							op->op = tokens->subtype & 0xFFFFFFFF;
+							op->priority = PC_OperatorPriority(tokens->subtype & 0xFFFFFFFF);
+							op->parentheses = parentheses;
+							op->next = nullptr;
+							op->prev = lastoperator;
+							if (lastoperator)
+								lastoperator->next = op;
+							else
+								firstoperator = op;
+							lastoperator = op;
+							lastwasvalue = 0;
+						}
 					}
 				}
 				break;
+
 			default:
 				SourceError(source, "unknown %s in #if/#elif", tokens->string);
 				error = 1;
 				break;
 			}
-			if (error)
-				break;
-			tokens = tokens->next;
 		}
+
 		if (!error)
 		{
-			if (lastwasvalue)
-			{
-				if (parentheses)
-				{
-					SourceError(source, "too many ( in #if/#elif");
-					error = 1;
-				}
-			}
-			else
+			if (!lastwasvalue)
 			{
 				SourceError(source, "trailing operator in #if/#elif");
 				error = 1;
 			}
+			else if (parentheses)
+			{
+				SourceError(source, "too many ( in #if/#elif");
+				error = 1;
+			}
 		}
-		gotquestmarkvalue = 0;
-		questmarkintvalue = 0;
-		questmarkfloatvalue = 0.0f;
+
+		int gotquestmarkvalue = 0;
+		int questmarkintvalue = 0;
+		float questmarkfloatvalue = 0.0f;
+
 		while (!error && firstoperator)
 		{
-			v = firstvalue;
-			for (oa = firstoperator;
-				oa->next
-				&& oa->parentheses <= oa->next->parentheses
-				&& (oa->parentheses != oa->next->parentheses || oa->priority < oa->next->priority);
-				oa = oa->next)
+			value_s* v = firstvalue;
+			operator_s* o;
+			for (o = firstoperator;
+				o->next
+				&& o->parentheses <= o->next->parentheses
+				&& (o->parentheses != o->next->parentheses || o->priority < o->next->priority);
+				o = o->next)
 			{
-				if (oa->op != 36 && oa->op != 35)
+				if (o->op != P_LOGIC_NOT && o->op != P_BIN_NOT)
 					v = v->next;
 				if (!v)
 				{
@@ -2433,140 +2386,134 @@ namespace zonetool::h1
 			}
 			if (error)
 				break;
-			v1 = v;
-			v2 = v->next;
-			switch (oa->op)
+
+			value_s* v1 = v;
+			value_s* v2 = v->next;
+			switch (o->op)
 			{
-			case 5:
-				v9 = v1->intvalue && v2->intvalue;
-				v1->intvalue = v9;
-				v8 = v1->floatvalue != 0.0 && v2->floatvalue != 0.0;
-				v1->floatvalue = (double)v8;
+			case P_LOGIC_AND:
+				v1->intvalue = v1->intvalue && v2->intvalue;
+				v1->floatvalue = (v1->floatvalue != 0.0 && v2->floatvalue != 0.0);
 				break;
-			case 6:
-				v7 = v1->intvalue || v2->intvalue;
-				v1->intvalue = v7;
-				v6 = v1->floatvalue != 0.0 || v2->floatvalue != 0.0;
-				v1->floatvalue = (double)v6;
+			case P_LOGIC_OR:
+				v1->intvalue = v1->intvalue || v2->intvalue;
+				v1->floatvalue = (v1->floatvalue != 0.0 || v2->floatvalue != 0.0);
 				break;
-			case 7:
+			case P_LOGIC_GEQ:
 				v1->intvalue = v1->intvalue >= v2->intvalue;
-				v1->floatvalue = (double)(v1->floatvalue >= v2->floatvalue);
+				v1->floatvalue = (v1->floatvalue >= v2->floatvalue);
 				break;
-			case 8:
+			case P_LOGIC_LEQ:
 				v1->intvalue = v1->intvalue <= v2->intvalue;
-				v1->floatvalue = (double)(v2->floatvalue >= v1->floatvalue);
+				v1->floatvalue = (v2->floatvalue >= v1->floatvalue);
 				break;
-			case 9:
+			case P_LOGIC_EQ:
 				v1->intvalue = v1->intvalue == v2->intvalue;
-				v1->floatvalue = (double)(v1->floatvalue == v2->floatvalue);
+				v1->floatvalue = (v1->floatvalue == v2->floatvalue);
 				break;
-			case 0xA:
+			case P_LOGIC_UNEQ:
 				v1->intvalue = v1->intvalue != v2->intvalue;
-				v1->floatvalue = (double)(v1->floatvalue != v2->floatvalue);
+				v1->floatvalue = (v1->floatvalue != v2->floatvalue);
 				break;
-			case 0x15:
+			case P_RSHIFT:
 				v1->intvalue >>= v2->intvalue;
 				break;
-			case 0x16:
+			case P_LSHIFT:
 				v1->intvalue <<= v2->intvalue;
 				break;
-			case 0x1A:
+			case P_MUL:
 				v1->intvalue *= v2->intvalue;
 				v1->floatvalue = v1->floatvalue * v2->floatvalue;
 				break;
-			case 0x1B:
+			case P_DIV:
 				if (!v2->intvalue || v2->floatvalue == 0.0)
-					goto LABEL_113;
+				{
+					SourceError(source, "divide by zero in #if/#elif");
+					error = 1;
+					break;
+				}
 				v1->intvalue /= v2->intvalue;
 				v1->floatvalue = v1->floatvalue / v2->floatvalue;
 				break;
-			case 0x1C:
-				if (v2->intvalue)
+			case P_MOD:
+				if (!v2->intvalue)
 				{
-					v1->intvalue %= v2->intvalue;
-				}
-				else
-				{
-				LABEL_113:
 					SourceError(source, "divide by zero in #if/#elif");
 					error = 1;
+					break;
 				}
+				v1->intvalue %= v2->intvalue;
 				break;
-			case 0x1D:
+			case P_ADD:
 				v1->intvalue += v2->intvalue;
 				v1->floatvalue = v1->floatvalue + v2->floatvalue;
 				break;
-			case 0x1E:
+			case P_SUB:
 				v1->intvalue -= v2->intvalue;
 				v1->floatvalue = v1->floatvalue - v2->floatvalue;
 				break;
-			case 0x20:
+			case P_BIN_AND:
 				v1->intvalue &= v2->intvalue;
 				break;
-			case 0x21:
+			case P_BIN_OR:
 				v1->intvalue |= v2->intvalue;
 				break;
-			case 0x22:
+			case P_BIN_XOR:
 				v1->intvalue ^= v2->intvalue;
 				break;
-			case 0x23:
+			case P_BIN_NOT:
 				v1->intvalue = ~v1->intvalue;
 				break;
-			case 0x24:
+			case P_LOGIC_NOT:
 				v1->intvalue = v1->intvalue == 0;
-				v1->floatvalue = (double)(v1->floatvalue == 0.0);
+				v1->floatvalue = (float)(v1->floatvalue == 0.0);
 				break;
-			case 0x25:
+			case P_LOGIC_GREATER:
 				v1->intvalue = v1->intvalue > v2->intvalue;
-				v1->floatvalue = (double)(v1->floatvalue > v2->floatvalue);
+				v1->floatvalue = (float)(v1->floatvalue > v2->floatvalue);
 				break;
-			case 0x26:
+			case P_LOGIC_LESS:
 				v1->intvalue = v1->intvalue < v2->intvalue;
-				v1->floatvalue = (double)(v2->floatvalue > v1->floatvalue);
+				v1->floatvalue = (float)(v2->floatvalue > v1->floatvalue);
 				break;
-			case 0x2A:
-				if (gotquestmarkvalue)
-				{
-					if (integer)
-					{
-						if (!questmarkintvalue)
-							v1->intvalue = v2->intvalue;
-					}
-					else if (questmarkfloatvalue == 0.0)
-					{
-						v1->floatvalue = v2->floatvalue;
-					}
-					gotquestmarkvalue = 0;
-				}
-				else
+			case P_COLON:
+				if (!gotquestmarkvalue)
 				{
 					SourceError(source, ": without ? in #if/#elif");
 					error = 1;
+					break;
 				}
+				if (integer)
+				{
+					if (!questmarkintvalue)
+						v1->intvalue = v2->intvalue;
+				}
+				else if (questmarkfloatvalue == 0.0)
+				{
+					v1->floatvalue = v2->floatvalue;
+				}
+				gotquestmarkvalue = 0;
 				break;
-			case 0x2B:
+			case P_QUESTIONMARK:
 				if (gotquestmarkvalue)
 				{
 					SourceError(source, "? after ? in #if/#elif");
 					error = 1;
+					break;
 				}
-				else
-				{
-					questmarkintvalue = v1->intvalue;
-					questmarkfloatvalue = v1->floatvalue;
-					gotquestmarkvalue = 1;
-				}
+				questmarkintvalue = v1->intvalue;
+				questmarkfloatvalue = v1->floatvalue;
+				gotquestmarkvalue = 1;
 				break;
 			default:
 				break;
 			}
 			if (error)
 				break;
-			lastoperatortype = oa->op;
-			if (oa->op != 36 && oa->op != 35)
+
+			if (o->op != P_LOGIC_NOT && o->op != P_BIN_NOT)
 			{
-				if (oa->op != 43)
+				if (o->op != P_QUESTIONMARK)
 					v = v->next;
 				if (v->prev)
 					v->prev->next = v->next;
@@ -2577,13 +2524,14 @@ namespace zonetool::h1
 				else
 					lastvalue = v->prev;
 			}
-			if (oa->prev)
-				oa->prev->next = oa->next;
+			if (o->prev)
+				o->prev->next = o->next;
 			else
-				firstoperator = oa->next;
-			if (oa->next)
-				oa->next->prev = oa->prev;
+				firstoperator = o->next;
+			if (o->next)
+				o->next->prev = o->prev;
 		}
+
 		if (firstvalue)
 		{
 			if (intvalue)
@@ -2591,10 +2539,6 @@ namespace zonetool::h1
 			if (floatvalue)
 				*floatvalue = firstvalue->floatvalue;
 		}
-		for (ob = firstoperator; ob; ob = ob->next)
-			;
-		for (v = firstvalue; v; v = lastvalue)
-			lastvalue = v->next;
 		if (!error)
 			return 1;
 		if (intvalue)
@@ -2604,7 +2548,7 @@ namespace zonetool::h1
 		return 0;
 	}
 
-	int PC_DollarEvaluate(source_s* source, int* intvalue, long double* floatvalue, int integer)
+	int PC_DollarEvaluate(source_s* source, int* intvalue, float* floatvalue, int integer)
 	{
 		token_s* t;
 		token_s* ta;
@@ -2638,7 +2582,7 @@ namespace zonetool::h1
 		lasttoken = 0;
 		do
 		{
-			if (token.type == 4)
+			if (token.type == TT_NAME)
 			{
 				if (defined)
 				{
@@ -2675,16 +2619,16 @@ namespace zonetool::h1
 				}
 				continue;
 			}
-			if (token.type != 3 && token.type != 5)
+			if (token.type != TT_NUMBER && token.type != TT_PUNCTUATION)
 			{
 				SourceError(source, "can't evaluate %s", token.string);
 				return 0;
 			}
-			if (token.string[0] == 40)
+			if (token.string[0] == '(')
 			{
 				++indent;
 			}
-			else if (token.string[0] == 41)
+			else if (token.string[0] == ')')
 			{
 				--indent;
 			}
@@ -2723,7 +2667,7 @@ namespace zonetool::h1
 		token.type = TT_NUMBER;
 		token.subtype = TT_INTEGER | TT_LONG | TT_DECIMAL;
 		token.intvalue = value;
-		token.floatvalue = value;
+		token.floatvalue = (float)value;
 		PC_UnreadSourceToken(source, &token);
 		if (value < 0) UnreadSignToken(source);
 		return 1;
@@ -2731,7 +2675,7 @@ namespace zonetool::h1
 
 	int PC_DollarDirective_evalfloat(source_s* source)
 	{
-		long double value;
+		float value;
 		token_s token;
 
 		if (!PC_DollarEvaluate(source, NULL, &value, 0))
@@ -2743,8 +2687,8 @@ namespace zonetool::h1
 		sprintf(token.string, "%1.2f", fabs(value));
 		token.type = TT_NUMBER;
 		token.subtype = TT_FLOAT | TT_LONG | TT_DECIMAL;
-		token.intvalue = (unsigned long)value;
-		token.floatvalue = value;
+		token.intvalue = (unsigned int)value;
+		token.floatvalue = (float)value;
 		PC_UnreadSourceToken(source, &token);
 		if (value < 0) UnreadSignToken(source);
 		return 1;
@@ -2767,7 +2711,7 @@ namespace zonetool::h1
 		{
 			if (token.linescrossed <= 0)
 			{
-				if (token.type == 4)
+				if (token.type == TT_NAME)
 				{
 					for (i = 0; dollardirectives[i].name; ++i)
 					{
@@ -2810,7 +2754,7 @@ namespace zonetool::h1
 					PC_UnreadSourceToken(source, token);
 					return 0;
 				}
-				if (token->type != 4)
+				if (token->type != TT_NAME)
 					break;
 				if (!expandDefines)
 					break;
@@ -2826,35 +2770,20 @@ namespace zonetool::h1
 		return 1;
 	}
 
-	int PC_ReadLineHandle(/*int handle,*/ pc_token_s* pc_token)
+	int PC_ReadLineHandle(pc_token_s* pc_token)
 	{
-		char v4;
-		char* v5;
-		token_s* v6;
-		int ret;
 		token_s token;
+		int ret;
 
-		//if (handle < 1 || handle >= 64)
-		//	return 0;
-		//if (!sourceFiles[handle])
-		//	return 0;
 		if (!sourceFile)
 			return 0;
-		ret = PC_ReadLine(sourceFile, &token, 1); //PC_ReadLine(sourceFiles[handle], &token, 1);
-		v6 = &token;
-		v5 = pc_token->string;
-		do
-		{
-			v4 = v6->string[0];
-			*v5 = v6->string[0];
-			v6 = (token_s*)((char*)v6 + 1);
-			++v5;
-		} while (v4);
+		ret = PC_ReadLine(sourceFile, &token, 1);
+		strcpy(pc_token->string, token.string);
 		pc_token->type = token.type;
-		pc_token->subtype = token.subtype;
+		pc_token->subtype = token.subtype & 0xFFFFFFFF;
 		pc_token->intvalue = token.intvalue;
 		pc_token->floatvalue = token.floatvalue;
-		if (pc_token->type == 1)
+		if (pc_token->type == TT_STRING)
 			StripDoubleQuotes(pc_token->string);
 		return ret;
 	}
@@ -2983,61 +2912,45 @@ namespace zonetool::h1
 
 	int Com_Compress(char* data_p)
 	{
-		char c;
-		char* datai;
-		int size;
-		char* datao;
+		char* in = data_p;
+		char* out = data_p;
+		int size = 0;
 
-		size = 0;
-		datao = data_p;
-		datai = data_p;
-		if (data_p)
+		if (in)
 		{
-			while (1)
+			char c;
+			while ((c = *in) != 0)
 			{
-				c = *datai;
-				if (!*datai)
-					break;
-				if (c != 13 && c != 10)
+				if (c == '/' && in[1] == '/')
 				{
-					if (c != 47 || datai[1] != 47)
+					// strip a // comment to the end of the line
+					while (*in && *in != '\n')
+						++in;
+				}
+				else if (c == '/' && in[1] == '*')
+				{
+					// strip a /* */ comment, but keep its newlines so line numbers stay correct
+					while (*in && (*in != '*' || in[1] != '/'))
 					{
-						if (c != 47 || datai[1] != 42)
+						if (*in == '\n')
 						{
-							*datao++ = c;
+							*out++ = '\n';
 							++size;
-							++datai;
 						}
-						else
-						{
-							while (*datai && (*datai != 42 || datai[1] != 47))
-							{
-								if (*datai == 10)
-								{
-									*datao++ = 10;
-									++size;
-								}
-								++datai;
-							}
-							if (*datai)
-								datai += 2;
-						}
+						++in;
 					}
-					else
-					{
-						while (*datai && *datai != 10)
-							++datai;
-					}
+					if (*in)
+						in += 2;
 				}
 				else
 				{
-					*datao++ = c;
+					*out++ = c;
 					++size;
-					++datai;
+					++in;
 				}
 			}
+			*out = 0;
 		}
-		*datao = 0;
 		return size;
 	}
 
@@ -3050,15 +2963,12 @@ namespace zonetool::h1
 
 		if (!script->punctuationtable)
 			script->punctuationtable = mmem->allocate<punctuation_s*>(256);
-		//memset((unsigned __int8*)script->punctuationtable, 0, 0x400u);
 		for (i = 0; punctuations[i].p; ++i)
 		{
 			newp = &punctuations[i];
 			lastp = 0;
 			for (p = script->punctuationtable[*punctuations[i].p]; p; p = p->next)
 			{
-				newp->p;
-				p->p;
 				if (strlen(p->p) < strlen(newp->p))
 				{
 					newp->next = p;
@@ -3092,7 +3002,7 @@ namespace zonetool::h1
 		script_s* script;
 		FILE* fp;
 		char pathname[64];
-		int length;
+		std::size_t length;
 
 		sprintf_s(pathname, 64, "%s", filename);
 		auto file = filesystem::file(pathname);
@@ -3139,7 +3049,7 @@ namespace zonetool::h1
 		return source;
 	}
 
-	script_s* LoadScriptMemory(const char* ptr, int length, const char* name)
+	script_s* LoadScriptMemory(const char* ptr, std::size_t length, const char* name)
 	{
 		script_s* script;
 
@@ -3155,11 +3065,11 @@ namespace zonetool::h1
 		script->line = 1;
 		script->lastline = 1;
 		SetScriptPunctuations(script);
-		memcpy((unsigned __int8*)script->buffer, (unsigned __int8*)ptr, length);
+		memcpy((unsigned char*)script->buffer, (unsigned char*)ptr, length);
 		return script;
 	}
 
-	int PC_Evaluate(source_s* source, int* intvalue, long double* floatvalue, int integer)
+	int PC_Evaluate(source_s* source, int* intvalue, float* floatvalue, int integer)
 	{
 		int result;
 		token_s* t;
@@ -3184,7 +3094,7 @@ namespace zonetool::h1
 			lasttoken = 0;
 			do
 			{
-				if (token.type == 4)
+				if (token.type == TT_NAME)
 				{
 					if (defined)
 					{
@@ -3222,7 +3132,7 @@ namespace zonetool::h1
 				}
 				else
 				{
-					if (token.type != 3 && token.type != 5)
+					if (token.type != TT_NUMBER && token.type != TT_PUNCTUATION)
 					{
 						SourceError(source, "can't evaluate %s", token.string);
 						return 0;
@@ -3276,7 +3186,7 @@ namespace zonetool::h1
 
 		if (PC_ReadLine(source, &token, 0))
 		{
-			if (token.type == 4)
+			if (token.type == TT_NAME)
 			{
 				d = PC_FindHashedDefine(source->definehash, token.string);
 				PC_PushIndent(source, type, (parseSkip_t)((type == 8) == (d == 0)));
@@ -3391,7 +3301,7 @@ namespace zonetool::h1
 			return 1;
 		if (PC_ReadLine(source, &token, 0))
 		{
-			if (token.type == 4)
+			if (token.type == TT_NAME)
 			{
 				hash = PC_NameHash(token.string);
 				lastdefine = 0;
@@ -3434,37 +3344,40 @@ namespace zonetool::h1
 
 	int PC_Directive_include(source_s* source)
 	{
-		script_s* script;
+		script_s* script = nullptr;
 		token_s token;
-		char path[64];
+		char path[64] = {};
 
 		if (source->skip > 0)
+		{
 			return 1;
-		if (!PC_ReadSourceToken(source, &token))
+		}
+
+		if (!PC_ReadSourceToken(source, &token) || token.linescrossed > 0)
 		{
 			SourceError(source, "#include without file name");
 			return 0;
 		}
-		if (token.linescrossed > 0)
-		{
-			SourceError(source, "#include without file name");
-			return 0;
-		}
+
 		if (token.type == TT_STRING)
 		{
 			StripDoubleQuotes(token.string);
 			PC_ConvertPath(token.string);
+
 			script = LoadScriptFile(token.string);
+			strncpy(path, token.string, sizeof(path) - 1);
+
 			if (!script)
 			{
-				strcpy(path, source->includepath);
-				strcat(path, token.string);
+				snprintf(path, sizeof(path), "%s%s", source->includepath, token.string);
 				script = LoadScriptFile(path);
 			}
 		}
-		else if (token.type == TT_PUNCTUATION && *token.string == '<')
+		else if (token.type == TT_PUNCTUATION && token.string[0] == '<')
 		{
-			strcpy(path, source->includepath);
+			std::size_t len = snprintf(path, sizeof(path), "%s", source->includepath);
+			const std::size_t base_len = len;
+
 			while (PC_ReadSourceToken(source, &token))
 			{
 				if (token.linescrossed > 0)
@@ -3472,18 +3385,36 @@ namespace zonetool::h1
 					PC_UnreadSourceToken(source, &token);
 					break;
 				}
-				if (token.type == TT_PUNCTUATION && *token.string == '>') break;
-				strncat(path, token.string, 64);
+
+				if (token.type == TT_PUNCTUATION && token.string[0] == '>')
+				{
+					break;
+				}
+
+				std::size_t token_len = strlen(token.string);
+
+				if (len + token_len >= sizeof(path))
+				{
+					SourceError(source, "#include path too long");
+					return 0;
+				}
+
+				memcpy(path + len, token.string, token_len);
+				len += token_len;
+				path[len] = '\0';
 			}
-			if (*token.string != '>')
+
+			if (token.type != TT_PUNCTUATION || token.string[0] != '>')
 			{
 				SourceWarning(source, "#include missing trailing >");
 			}
-			if (!strlen(path))
+
+			if (len == base_len)
 			{
 				SourceError(source, "#include without file name between < >");
 				return 0;
 			}
+
 			PC_ConvertPath(path);
 			script = LoadScriptFile(path);
 		}
@@ -3492,26 +3423,20 @@ namespace zonetool::h1
 			SourceError(source, "#include without file name");
 			return 0;
 		}
+
 		if (!script)
 		{
 			SourceError(source, "file %s not found", path);
 			return 0;
 		}
+
 		PC_PushScript(source, script);
 		return 1;
 	}
 
 	int PC_Directive_define(source_s* source)
 	{
-		char v2;
-		char* v3;
-		token_s* v4;
-		token_s* t;
-		token_s* ta;
-		define_s* define;
-		define_s* definea;
 		token_s token;
-		token_s* last;
 
 		if (source->skip > 0)
 			return 1;
@@ -3520,13 +3445,13 @@ namespace zonetool::h1
 			SourceError(source, "#define without name");
 			return 0;
 		}
-		if (token.type != 4)
+		if (token.type != TT_NAME)
 		{
 			PC_UnreadSourceToken(source, &token);
 			SourceError(source, "expected name after #define, found %s", token.string);
 			return 0;
 		}
-		define = PC_FindHashedDefine(source->definehash, token.string);
+		define_s* define = PC_FindHashedDefine(source->definehash, token.string);
 		if (define)
 		{
 			if ((define->flags & 1) != 0)
@@ -3540,98 +3465,91 @@ namespace zonetool::h1
 				return 0;
 			PC_FindHashedDefine(source->definehash, token.string);
 		}
-		definea = mmem->manual_allocate<define_s>(strlen(token.string) + 1 + sizeof(define_s)); //(define_s*)GetMemory(&token.string[strlen(token.string) + 1] - &token.string[1] + 33);
-		definea->name = 0;
-		definea->flags = 0;
-		definea->builtin = 0;
-		definea->numparms = 0;
-		definea->parms = 0;
-		definea->tokens = 0;
-		definea->next = 0;
-		definea->hashnext = 0;
-		definea->name = (char*)&definea[1];
-		v4 = &token;
-		v3 = definea->name;
-		do
-		{
-			v2 = v4->string[0];
-			*v3 = v4->string[0];
-			v4 = (token_s*)((char*)v4 + 1);
-			++v3;
-		} while (v2);
-		PC_AddDefineToHash(definea, source->definehash);
+		define_s* newdefine = mmem->manual_allocate<define_s>(strlen(token.string) + 1 + sizeof(define_s));
+		newdefine->flags = 0;
+		newdefine->builtin = 0;
+		newdefine->numparms = 0;
+		newdefine->parms = 0;
+		newdefine->tokens = 0;
+		newdefine->next = 0;
+		newdefine->hashnext = 0;
+		newdefine->name = (char*)&newdefine[1];
+		strcpy(newdefine->name, token.string);
+		PC_AddDefineToHash(newdefine, source->definehash);
 		if (!PC_ReadLine(source, &token, 0))
 			return 1;
-		if (PC_WhiteSpaceBeforeToken(&token) || strcmp(token.string, "("))
+
+		if (!PC_WhiteSpaceBeforeToken(&token) && !strcmp(token.string, "("))
 		{
-		LABEL_37:
-			last = 0;
-			do
+			token_s* lastparm = 0;
+			if (!PC_CheckTokenString(source, ")"))
 			{
-				ta = PC_CopyToken(&token);
-				if (ta->type == 4 && !strcmp(ta->string, definea->name))
+				while (1)
 				{
-					SourceError(source, "recursive define (removed recursion)");
-				}
-				else
-				{
-					PC_ClearTokenWhiteSpace(ta);
-					ta->next = 0;
-					if (last)
-						last->next = ta;
+					if (!PC_ReadLine(source, &token, 0))
+					{
+						SourceError(source, "expected define parameter");
+						return 0;
+					}
+					if (token.type != TT_NAME)
+					{
+						SourceError(source, "invalid define parameter");
+						return 0;
+					}
+					if (PC_FindDefineParm(newdefine, token.string) >= 0)
+					{
+						SourceError(source, "two of the same define parameters");
+						return 0;
+					}
+					token_s* t = PC_CopyToken(&token);
+					PC_ClearTokenWhiteSpace(t);
+					t->next = 0;
+					if (lastparm)
+						lastparm->next = t;
 					else
-						definea->tokens = ta;
-					last = ta;
+						newdefine->parms = t;
+					lastparm = t;
+					++newdefine->numparms;
+					if (!PC_ReadLine(source, &token, 0))
+					{
+						SourceError(source, "define parameters not terminated");
+						return 0;
+					}
+					if (!strcmp(token.string, ")"))
+						break;
+					if (strcmp(token.string, ","))
+					{
+						SourceError(source, "define not terminated");
+						return 0;
+					}
 				}
-			} while (PC_ReadLine(source, &token, 0));
-			if (!last || strcmp(definea->tokens->string, "##") && strcmp(last->string, "##"))
-				return 1;
-			SourceError(source, "define with misplaced ##");
-			return 0;
-		}
-		last = 0;
-		if (PC_CheckTokenString(source, ")"))
-		{
-		LABEL_35:
+			}
 			if (!PC_ReadLine(source, &token, 0))
 				return 1;
-			goto LABEL_37;
 		}
+
+		token_s* last = 0;
 		do
 		{
-			if (!PC_ReadLine(source, &token, 0))
+			token_s* ta = PC_CopyToken(&token);
+			if (ta->type == TT_NAME && !strcmp(ta->string, newdefine->name))
 			{
-				SourceError(source, "expected define parameter");
-				return 0;
+				SourceError(source, "recursive define (removed recursion)");
 			}
-			if (token.type != 4)
-			{
-				SourceError(source, "invalid define parameter");
-				return 0;
-			}
-			if (PC_FindDefineParm(definea, token.string) >= 0)
-			{
-				SourceError(source, "two of the same define parameters");
-				return 0;
-			}
-			t = PC_CopyToken(&token);
-			PC_ClearTokenWhiteSpace(t);
-			t->next = 0;
-			if (last)
-				last->next = t;
 			else
-				definea->parms = t;
-			last = t;
-			++definea->numparms;
-			if (!PC_ReadLine(source, &token, 0))
 			{
-				SourceError(source, "define parameters not terminated");
-				return 0;
+				PC_ClearTokenWhiteSpace(ta);
+				ta->next = 0;
+				if (last)
+					last->next = ta;
+				else
+					newdefine->tokens = ta;
+				last = ta;
 			}
-			if (!strcmp(token.string, ")"))
-				goto LABEL_35;
-		} while (!strcmp(token.string, ","));
-		SourceError(source, "define not terminated");
+		} while (PC_ReadLine(source, &token, 0));
+		if (!last || (strcmp(newdefine->tokens->string, "##") && strcmp(last->string, "##")))
+			return 1;
+		SourceError(source, "define with misplaced ##");
 		return 0;
 	}
 
@@ -3658,8 +3576,7 @@ namespace zonetool::h1
 		token_s token;
 
 		SourceWarning(source, "#pragma directive not supported");
-		while (PC_ReadLine(source, &token, 0))
-			;
+		while (PC_ReadLine(source, &token, 0));
 		return 1;
 	}
 
@@ -3675,8 +3592,8 @@ namespace zonetool::h1
 		token.endwhitespace_p = source->scriptstack->script_p;
 		token.linescrossed = 0;
 		sprintf(token.string, "%d", abs(value));
-		token.type = 3;
-		token.subtype = 12296;
+		token.type = TT_NUMBER;
+		token.subtype = TT_INTEGER | TT_LONG | TT_DECIMAL;
 		PC_UnreadSourceToken(source, &token);
 		if (value < 0)
 			UnreadSignToken(source);
@@ -3685,9 +3602,8 @@ namespace zonetool::h1
 
 	int PC_Directive_evalfloat(source_s* source)
 	{
-		float v2;
 		token_s token;
-		long double value;
+		float value;
 
 		if (!PC_Evaluate(source, 0, &value, 0))
 			return 0;
@@ -3695,12 +3611,11 @@ namespace zonetool::h1
 		token.whitespace_p = source->scriptstack->script_p;
 		token.endwhitespace_p = source->scriptstack->script_p;
 		token.linescrossed = 0;
-		v2 = value;
-		sprintf(token.string, "%1.2f", fabs(v2));
-		token.type = 3;
-		token.subtype = 10248;
+		sprintf(token.string, "%1.2f", fabs((float)value));
+		token.type = TT_NUMBER;
+		token.subtype = TT_FLOAT | TT_LONG | TT_DECIMAL;
 		PC_UnreadSourceToken(source, &token);
-		if (value < 0.0)
+		if (value < 0.0f)
 			UnreadSignToken(source);
 		return 1;
 	}
@@ -3734,10 +3649,10 @@ namespace zonetool::h1
 		int res;
 
 		script = LoadScriptMemory(string, strlen(string), "*extern");
-		memset((unsigned __int8*)&src, 0, sizeof(src));
+		memset((unsigned char*)&src, 0, sizeof(src));
 		strncpy(src.filename, "*extern", 0x40u);
 		src.scriptstack = script;
-		src.definehash = mmem->allocate<define_s*>(1024);//(define_s**)GetClearedMemory(0x1000u);
+		src.definehash = mmem->allocate<define_s*>(1024);
 		res = PC_Directive_define(&src);
 		for (t = src.tokens; t; t = src.tokens)
 		{
@@ -3800,7 +3715,7 @@ namespace zonetool::h1
 		{
 			if (token.linescrossed <= 0)
 			{
-				if (token.type == 4)
+				if (token.type == TT_NAME)
 				{
 					for (i = 0; directives[i].name; ++i)
 					{
@@ -3841,20 +3756,20 @@ namespace zonetool::h1
 					{
 						if (!PC_ReadSourceToken(source, token))
 							return 0;
-						if (token->type != 5 || token->string[0] != '#' || token->string[1])
+						if (token->type != TT_PUNCTUATION || token->string[0] != '#' || token->string[1])
 							break;
 						if (!PC_ReadDirective(source))
 							return 0;
 					}
-					if (token->type != 5 || token->string[0] != '$')
+					if (token->type != TT_PUNCTUATION || token->string[0] != '$')
 						break;
 					if (!PC_ReadDollarDirective(source))
 						return 0;
 				}
 			} while (source->skip);
-			if (token->type == 1 && PC_ReadToken(source, &newtoken))
+			if (token->type == TT_STRING && PC_ReadToken(source, &newtoken))
 			{
-				if (newtoken.type == 1)
+				if (newtoken.type == TT_STRING)
 				{
 					token->string[strlen(token->string) - 1] = 0;
 					if (strlen(token->string) + &newtoken.string[strlen(&newtoken.string[1]) + 2] - &newtoken.string[2] + 1 >= 0x400)
@@ -3896,24 +3811,20 @@ namespace zonetool::h1
 		return 0;
 	}
 
-	int PC_ReadTokenHandle(/*int handle,*/ pc_token_s* pc_token)
+	int PC_ReadTokenHandle(pc_token_s* pc_token)
 	{
 		token_s token;
 		int ret;
 
-		//if (handle < 1 || handle >= 64)
-		//	return 0;
-		//if (!sourceFiles[handle])
-		//	return 0;
 		if (!sourceFile)
 			return 0;
-		ret = PC_ReadToken(sourceFile, &token); // PC_ReadToken(sourceFiles[handle], &token);
+		ret = PC_ReadToken(sourceFile, &token);
 		memcpy(pc_token->string, token.string, 0x400);
 		pc_token->type = token.type;
-		pc_token->subtype = token.subtype;
+		pc_token->subtype = token.subtype & 0xFFFFFFFF;
 		pc_token->intvalue = token.intvalue;
 		pc_token->floatvalue = token.floatvalue;
-		if (pc_token->type == 1)
+		if (pc_token->type == TT_STRING)
 			StripDoubleQuotes(pc_token->string);
 		return ret;
 	}
@@ -3950,146 +3861,135 @@ namespace zonetool::h1
 		return "";
 	}
 
-	bool Expression_Parse(/*int handle,*/ Statement_s* statement, int maxTokens)
+	bool Expression_Parse(Statement_s* statement, int maxTokens)
 	{
 		pc_token_s token;
-		int numOpenLeftParens;
-		int tokenType;
-		int lastType;
 		operationEnum op;
-		operationEnum lastOp;
-		Operand lastOperand;
-		expressionEntry* newExpression;
+		operationEnum lastOp = OP_NOOP;
+		Operand lastOperand{};
+		int lastType = 2;
+		int numOpenLeftParens = 0;
 
-		lastOp = OP_NOOP;
-		lastType = 2;
-
-		numOpenLeftParens = 0;
-		while (PC_ReadTokenHandle(/*handle,*/ &token))
+		while (PC_ReadTokenHandle(&token))
 		{
 			if (statement->numEntries == maxTokens)
 			{
-				PC_SourceError(/*handle,*/
-					"Need to increment MAX_TOKENS_PER_STATEMENT - this statement has more than %i tokens", maxTokens);
-				return 0;
+				PC_SourceError("Need to increment MAX_TOKENS_PER_STATEMENT - this statement has more than %i tokens", maxTokens);
+				return false;
 			}
-			newExpression = &statement->entries[statement->numEntries];
+			expressionEntry* newExpression = &statement->entries[statement->numEntries];
 
-			tokenType = token.type;
+			int tokenType = token.type;
 			if (token.string[0] == ';')
 				break;
-			if (tokenType == TT_STRING)
-			{
-				op = OP_NOOP;
-			}
-			else
-			{
-				op = Expression_GetOp(token.string);
-			}
+
+			op = (tokenType == TT_STRING) ? OP_NOOP : Expression_GetOp(token.string);
+
+			bool isOperand = false;
 			if (op == OP_NOOP)
 			{
 				switch (tokenType)
 				{
 				case TT_NUMBER:
-					if (token.floatvalue == (float)(token.intvalue))
+					newExpression->type = 1;
+					if (token.floatvalue == (float)token.intvalue)
 					{
-						newExpression->type = 1;
 						newExpression->data.operand.dataType = VAL_INT;
 						newExpression->data.operand.internals.intVal = token.intvalue;
 					}
 					else
 					{
-						newExpression->type = 1;
 						newExpression->data.operand.dataType = VAL_FLOAT;
 						newExpression->data.operand.internals.floatVal = token.floatvalue;
 					}
-					goto LABEL_39;
+					lastType = 1;
+					lastOperand = newExpression->data.operand;
+					isOperand = true;
+					break;
 				case TT_STRING:
 				case TT_NAME:
 					newExpression->type = 1;
 					newExpression->data.operand.dataType = VAL_STRING;
 					newExpression->data.operand.internals.stringVal.string = zmem->duplicate_string(token.string);
-
-				LABEL_39:
 					lastType = 1;
 					lastOperand = newExpression->data.operand;
-					goto LABEL_40;
-
+					isOperand = true;
+					break;
 				default:
-					PC_SourceError(
-						/*handle,*/
-						"Expression Error: Unknown token '%s'",
-						token.string);
+					PC_SourceError("Expression Error: Unknown token '%s'", token.string);
+					break;
 				}
 			}
+
+			if (isOperand)
+			{
+				++statement->numEntries;
+				continue;
+			}
+
 			if (op == OP_LEFTPAREN)
 			{
 				++numOpenLeftParens;
-				if (lastType == 2)
-					goto LABEL_31;
-				if (lastType)
+				if (lastType != 2)
 				{
-					PC_SourceError(/*handle,*/ "Expression Error: %s(...", GetOperandAsString(lastOperand).data());
-					return 0;
-				}
-				if (!Expression_OpIsFunction(lastOp))
-					goto LABEL_31;
-				lastOp = OP_LEFTPAREN;
-			}
-			else
-			{
-				if (op == OP_RIGHTPAREN)
-				{
-					if (--numOpenLeftParens < 0)
+					if (lastType)
 					{
-						PC_SourceError(
-							/*handle,*/
-							"Expression Error: Found a right parenthesis that doesn't match any left parenthesis");
-						return 0;
+						PC_SourceError("Expression Error: %s(...", GetOperandAsString(lastOperand).data());
+						return false;
 					}
-					if (!numOpenLeftParens)
-						break;
-				}
-			LABEL_31:
-				newExpression->type = 0;
-				newExpression->data.op = op;
-				lastType = 0;
-				lastOp = op;
-			LABEL_40:
-				if (newExpression)
-				{
-					++statement->numEntries;
+					if (Expression_OpIsFunction(lastOp))
+					{
+						lastOp = OP_LEFTPAREN;
+						continue;
+					}
 				}
 			}
+			else if (op == OP_RIGHTPAREN)
+			{
+				if (--numOpenLeftParens < 0)
+				{
+					PC_SourceError("Expression Error: Found a right parenthesis that doesn't match any left parenthesis");
+					return false;
+				}
+				if (!numOpenLeftParens)
+					break;
+			}
+
+			newExpression->type = 0;
+			newExpression->data.op = op;
+			lastType = 0;
+			lastOp = op;
+			++statement->numEntries;
 		}
 
-		return 1;
+		return true;
 	}
 
-	int Expression_Read(/*int handle,*/ Statement_s** statement)
+	bool Expression_Read(Statement_s** statement)
 	{
 		int maxTokens = MAX_TOKENS_PER_STATEMENT;
 
 		*statement = zmem->allocate<Statement_s>();
 		(*statement)->entries = zmem->allocate<expressionEntry>(maxTokens);
 
-		if (!Expression_Parse(/*handle,*/ *statement, maxTokens))
-			return 0;
-		return 1;
+		if (!Expression_Parse(*statement, maxTokens))
+			return false;
+		return true;
 	}
 
-	int PC_String_Parse(/*int handle,*/ const char** out)
+	bool PC_String_Parse(const char** out)
 	{
 		pc_token_s token;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		*out = zmem->duplicate_string(token.string);
-		return 1;
+		return true;
 	}
 
-	enum EvalValueType : __int32
+	enum EvalValueType : std::int32_t
 	{
+		EVAL_VALUE_FLOAT = 0x0,
 		EVAL_VALUE_DOUBLE = 0x0,
 		EVAL_VALUE_INT = 0x1,
 		EVAL_VALUE_STRING = 0x2,
@@ -4100,13 +4000,14 @@ namespace zonetool::h1
 		EvalValueType type;
 		union
 		{
-			long double d;
+			float f;
+			double d;
 			int i;
 			char* s;
 		} u;
 	};
 
-	enum EvalOperatorType : __int32
+	enum EvalOperatorType : std::int32_t
 	{
 		EVAL_OP_LPAREN = 0x0,
 		EVAL_OP_RPAREN = 0x1,
@@ -4147,672 +4048,510 @@ namespace zonetool::h1
 		bool pushedOp;
 	};
 
-	bool Eval_CanPushValue(const Eval* eval)
+	bool Eval_IsUnaryOp(Eval* eval)
 	{
-		const char* pExceptionObject;
+		return !eval->valStackPos || eval->pushedOp;
+	}
 
-		if (!eval->valStackPos)
-			return 1;
+	bool Eval_CanPushValue(Eval* eval)
+	{
 		if (eval->valStackPos == 1024)
-		{
-			pExceptionObject = "evaluation stack overflow - expression is too complex";
-			throw std::exception(pExceptionObject);
-		}
-		return eval->pushedOp;
+			throw std::runtime_error("evaluation stack overflow - expression is too complex");
+
+		return Eval_IsUnaryOp(eval);
 	}
 
-	char Eval_PushNumber(Eval* eval, long double value)
+	bool Eval_PushNumber(Eval* eval, float value)
 	{
 		if (!Eval_CanPushValue(eval))
-			return 0;
-		eval->valStack[eval->valStackPos].type = EVAL_VALUE_DOUBLE;
-		eval->valStack[eval->valStackPos++].u.d = value;
-		eval->pushedOp = 0;
-		return 1;
+			return false;
+
+		eval->valStack[eval->valStackPos].type = EVAL_VALUE_FLOAT;
+		eval->valStack[eval->valStackPos++].u.f = value;
+		eval->pushedOp = false;
+
+		return true;
 	}
 
-	char Eval_PushInteger(Eval* eval, int value)
+	bool Eval_PushInteger(Eval* eval, int value)
 	{
 		if (!Eval_CanPushValue(eval))
-			return 0;
+			return false;
+
 		eval->valStack[eval->valStackPos].type = EVAL_VALUE_INT;
 		eval->valStack[eval->valStackPos++].u.i = value;
-		eval->pushedOp = 0;
-		return 1;
+		eval->pushedOp = false;
+
+		return true;
 	}
 
-	char Eval_OperatorForToken(const char* text, EvalOperatorType* op)
+	bool Eval_OperatorForToken(const char* text, EvalOperatorType* op)
 	{
-		char result;
-
 		if (!text || !op)
 			__debugbreak();
+
 		switch (*text)
 		{
 		case '!':
-			if (text[1] == '=')
-				*op = EVAL_OP_NOT_EQUAL;
-			else
-				*op = EVAL_OP_LOGICAL_NOT;
-			result = 1;
-			break;
+			*op = (text[1] == '=') ? EVAL_OP_NOT_EQUAL : EVAL_OP_LOGICAL_NOT;
+			return true;
+
 		case '%':
 			*op = EVAL_OP_MODULUS;
-			result = 1;
-			break;
+			return true;
+
 		case '&':
-			if (text[1] == '&')
-				*op = EVAL_OP_LOGICAL_AND;
-			else
-				*op = EVAL_OP_BITWISE_AND;
-			result = 1;
-			break;
+			*op = (text[1] == '&') ? EVAL_OP_LOGICAL_AND : EVAL_OP_BITWISE_AND;
+			return true;
+
 		case '(':
 			*op = EVAL_OP_LPAREN;
-			result = 1;
-			break;
+			return true;
+
 		case ')':
 			*op = EVAL_OP_RPAREN;
-			result = 1;
-			break;
+			return true;
+
 		case '*':
 			*op = EVAL_OP_MULTIPLY;
-			result = 1;
-			break;
+			return true;
+
 		case '+':
 			*op = EVAL_OP_PLUS;
-			result = 1;
-			break;
+			return true;
+
 		case '-':
 			*op = EVAL_OP_MINUS;
-			result = 1;
-			break;
+			return true;
+
 		case '/':
 			*op = EVAL_OP_DIVIDE;
-			result = 1;
-			break;
+			return true;
+
 		case ':':
 			*op = EVAL_OP_COLON;
-			result = 1;
-			break;
+			return true;
+
 		case '<':
 			if (text[1] == '<')
-			{
 				*op = EVAL_OP_LSHIFT;
-				result = 1;
-			}
 			else
-			{
-				if (text[1] == '=')
-					*op = EVAL_OP_LESS_EQUAL;
-				else
-					*op = EVAL_OP_LESS;
-				result = 1;
-			}
-			break;
+				*op = (text[1] == '=') ? EVAL_OP_LESS_EQUAL : EVAL_OP_LESS;
+			return true;
+
 		case '=':
 			if (text[1] != '=')
-				goto LABEL_46;
+				return false;
 			*op = EVAL_OP_EQUALS;
-			result = 1;
-			break;
+			return true;
+
 		case '>':
 			if (text[1] == '>')
-			{
 				*op = EVAL_OP_RSHIFT;
-				result = 1;
-			}
 			else
-			{
-				if (text[1] == '=')
-					*op = EVAL_OP_GREATER_EQUAL;
-				else
-					*op = EVAL_OP_GREATER;
-				result = 1;
-			}
-			break;
+				*op = (text[1] == '=') ? EVAL_OP_GREATER_EQUAL : EVAL_OP_GREATER;
+			return true;
+
 		case '?':
 			*op = EVAL_OP_QUESTION;
-			result = 1;
-			break;
+			return true;
+
 		case '^':
 			*op = EVAL_OP_BITWISE_XOR;
-			result = 1;
-			break;
+			return true;
+
 		case '|':
-			if (text[1] == '|')
-				*op = EVAL_OP_LOGICAL_OR;
-			else
-				*op = EVAL_OP_BITWISE_OR;
-			result = 1;
-			break;
+			*op = (text[1] == '|') ? EVAL_OP_LOGICAL_OR : EVAL_OP_BITWISE_OR;
+			return true;
+
 		case '~':
 			*op = EVAL_OP_BITWISE_NOT;
-			result = 1;
-			break;
+			return true;
+
 		default:
-		LABEL_46:
-			result = 0;
-			break;
+			return false;
 		}
-		return result;
-	}
-
-	bool Eval_IsUnaryOp(const Eval* eval)
-	{
-		bool result;
-
-		if (eval->valStackPos)
-			result = eval->pushedOp;
-		else
-			result = 1;
-		return result;
 	}
 
 	void Eval_PrepareBinaryOpSameTypes(Eval* eval)
 	{
-		int pos;
-		const char* pExceptionObject;
-
 		if (eval->valStackPos < 2)
+			throw std::runtime_error("missing operand (for example, 'a + ' or ' / b')");
+
+		EvalValue* lhs = &eval->valStack[eval->valStackPos - 2];
+		EvalValue* rhs = &eval->valStack[eval->valStackPos - 1];
+		if (lhs->type == EVAL_VALUE_STRING || rhs->type == EVAL_VALUE_STRING)
+			throw std::runtime_error("operation not valid on strings");
+
+		if (lhs->type != rhs->type)
 		{
-			pExceptionObject = "missing operand (for example, 'a + ' or ' / b')";
-			throw std::exception(pExceptionObject);
-		}
-		if (eval->opStack[4 * eval->valStackPos + 1016] == EVAL_OP_COLON
-			|| eval->opStack[4 * eval->valStackPos + 1020] == EVAL_OP_COLON)
-		{
-			pExceptionObject = "operation not valid on strings";
-			throw std::exception(pExceptionObject);
-		}
-		if (eval->opStack[4 * eval->valStackPos + 1016] != eval->opStack[4 * eval->valStackPos + 1020])
-		{
-			if (eval->opStack[4 * eval->valStackPos + 1016] == EVAL_OP_RPAREN)
+			if (lhs->type == EVAL_VALUE_INT)
 			{
-				*(double*)&eval->opStack[4 * eval->valStackPos + 1018] = (double)(int)eval->opStack[4 * eval->valStackPos + 1018];
-				pos = eval->valStackPos - 2;
+				lhs->u.f = (float)lhs->u.i;
+				lhs->type = EVAL_VALUE_FLOAT;
 			}
 			else
 			{
-				*(double*)&eval->opStack[4 * eval->valStackPos + 1022] = (double)(int)eval->opStack[4 * eval->valStackPos + 1022];
-				pos = eval->valStackPos - 1;
+				rhs->u.f = (float)rhs->u.i;
+				rhs->type = EVAL_VALUE_FLOAT;
 			}
-			eval->valStack[pos].type = EVAL_VALUE_DOUBLE;
 		}
 	}
 
 	void Eval_PrepareBinaryOpBoolean(Eval* eval)
 	{
-		const char* pExceptionObject;
-
 		if (eval->valStackPos < 2)
+			throw std::runtime_error("missing operand (for example, 'a + ' or ' / b')");
+
+		EvalValue* lhs = &eval->valStack[eval->valStackPos - 2];
+		EvalValue* rhs = &eval->valStack[eval->valStackPos - 1];
+		if (lhs->type == EVAL_VALUE_STRING || rhs->type == EVAL_VALUE_STRING)
+			throw std::runtime_error("operation not valid on strings");
+
+		if (lhs->type == EVAL_VALUE_FLOAT)
 		{
-			pExceptionObject = "missing operand (for example, 'a + ' or ' / b')";
-			throw std::exception(pExceptionObject);
-		}
-		if (eval->valStack[eval->valStackPos - 2].type == 2 || eval->valStack[eval->valStackPos - 1].type == 2)
-		{
-			pExceptionObject = "operation not valid on strings";
-			throw std::exception(pExceptionObject);
-		}
-		if (eval->valStack[eval->valStackPos - 2].type)
-		{
-			eval->valStack[eval->valStackPos - 2].u.i = eval->valStack[eval->valStackPos - 2].u.i != 0;
-		}
-		else
-		{
-			eval->valStack[eval->valStackPos - 2].u.i = eval->valStack[eval->valStackPos - 2].u.d != 0.0;
-			eval->valStack[eval->valStackPos - 2].type = EVAL_VALUE_INT;
-		}
-		if (eval->valStack[eval->valStackPos - 1].type)
-		{
-			eval->valStack[eval->valStackPos - 1].u.i = eval->valStack[eval->valStackPos - 1].u.i != 0;
+			lhs->u.i = lhs->u.f != 0.0f;
+			lhs->type = EVAL_VALUE_INT;
 		}
 		else
 		{
-			eval->valStack[eval->valStackPos - 1].u.i = eval->valStack[eval->valStackPos - 1].u.d != 0.0;
-			eval->valStack[eval->valStackPos - 1].type = EVAL_VALUE_INT;
+			lhs->u.i = lhs->u.i != 0;
+		}
+		if (rhs->type == EVAL_VALUE_FLOAT)
+		{
+			rhs->u.i = rhs->u.f != 0.0f;
+			rhs->type = EVAL_VALUE_INT;
+		}
+		else
+		{
+			rhs->u.i = rhs->u.i != 0;
 		}
 	}
 
 	void Eval_PrepareBinaryOpIntegers(Eval* eval)
 	{
-		const char* pExceptionObject;
-
 		if (eval->valStackPos < 2)
+			throw std::runtime_error("missing operand (for example, 'a + ' or ' / b')");
+
+		EvalValue* lhs = &eval->valStack[eval->valStackPos - 2];
+		EvalValue* rhs = &eval->valStack[eval->valStackPos - 1];
+		if (lhs->type == EVAL_VALUE_STRING || rhs->type == EVAL_VALUE_STRING)
+			throw std::runtime_error("operation not valid on strings");
+
+		if (lhs->type == EVAL_VALUE_FLOAT)
 		{
-			pExceptionObject = "missing operand (for example, 'a + ' or ' / b')";
-			throw std::exception(pExceptionObject);
+			lhs->u.i = (signed int)lhs->u.f;
+			lhs->type = EVAL_VALUE_INT;
 		}
-		if (eval->valStack[eval->valStackPos - 2].type == 2 || eval->valStack[eval->valStackPos - 1].type == 2)
+		if (rhs->type == EVAL_VALUE_FLOAT)
 		{
-			pExceptionObject = "operation not valid on strings";
-			throw std::exception(pExceptionObject);
-		}
-		if (eval->valStack[eval->valStackPos - 2].type == EVAL_VALUE_DOUBLE)
-		{
-			eval->valStack[eval->valStackPos - 2].u.i = (signed int)eval->valStack[eval->valStackPos - 2].u.d;
-			eval->valStack[eval->valStackPos - 2].type = EVAL_VALUE_INT;
-		}
-		if (eval->valStack[eval->valStackPos - 1].type == EVAL_VALUE_DOUBLE)
-		{
-			eval->valStack[eval->valStackPos - 1].u.i = (signed int)eval->valStack[eval->valStackPos - 1].u.d;
-			eval->valStack[eval->valStackPos - 1].type = EVAL_VALUE_INT;
+			rhs->u.i = (signed int)rhs->u.f;
+			rhs->type = EVAL_VALUE_INT;
 		}
 	}
 
-	char Eval_EvaluationStep(Eval* eval)
+	bool Eval_EvaluationStep(Eval* eval)
 	{
-		const char* pExceptionObject;
-		int v4;
-		unsigned __int64 v5;
-		int v6;
-		long double v7;
-		EvalValue* v8;
-		EvalValue* v9;
-		long double v10;
-		long double v11;
-		int v13;
-		int v14;
-		int i;
-		int v17;
-		int v18;
-		int v19;
-		int v20;
-		bool v21;
-		int v22;
-		bool v23;
-		double v25;
-		unsigned __int8* v28;
-		unsigned int v29;
-		char* s;
-		unsigned int v31;
-		int v32;
-		unsigned int v33;
-		unsigned int v34;
-		unsigned int v35;
-		int length[2];
-		unsigned int v37;
-		const char* v38;
-		const char* v39;
-		const char* v40;
-		int v41;
-		const char* v42;
-		int v43;
-		const char* v44;
-		const char* v45;
-
 		if (!eval->opStackPos)
-			return 0;
+			return false;
+
 		if (eval->opStack[--eval->opStackPos] == EVAL_OP_LPAREN)
-			return 1;
-		if (eval->opStack[eval->opStackPos] == 3)
-		{
-			pExceptionObject = "found '?' with no following ':' in expression of type 'a ? b : c'";
-			throw std::exception(pExceptionObject);
-		}
+			return true;
+		if (eval->opStack[eval->opStackPos] == EVAL_OP_QUESTION)
+			throw std::runtime_error("found '?' with no following ':' in expression of type 'a ? b : c'");
 		if (!eval->valStackPos)
+			throw std::runtime_error("missing operand (for example, 'a + ' or ' / b')");
+
+		EvalOperatorType op = eval->opStack[eval->opStackPos];
+		EvalValue* rhs = &eval->valStack[eval->valStackPos - 1];
+		EvalValue* lhs = &eval->valStack[eval->valStackPos - 2];
+
+		switch (op)
 		{
-			pExceptionObject = "missing operand (for example, 'a + ' or ' / b')";
-			throw std::exception(pExceptionObject);
-		}
-		v43 = eval->opStack[eval->opStackPos] - 2;
-		switch (v43)
+		case EVAL_OP_COLON:
 		{
-		case 0:
 			if (eval->valStackPos < 3)
+				throw std::runtime_error("missing operand (for example, 'a + ' or ' / b')");
+
+			EvalValue* condition = &eval->valStack[eval->valStackPos - 3];
+			bool conditionTrue;
+			if (condition->type == EVAL_VALUE_FLOAT)
 			{
-				pExceptionObject = "missing operand (for example, 'a + ' or ' / b')";
-				throw std::exception(pExceptionObject);
-			}
-			if (eval->valStack[eval->valStackPos - 3].type)
-			{
-				if (eval->valStack[eval->valStackPos - 3].type != 1)
-				{
-					pExceptionObject = "can only switch on numbers";
-					throw std::exception(pExceptionObject);
-				}
-				v13 = -(eval->valStack[eval->valStackPos - 3].u.i != 0) - 1;
+				conditionTrue = condition->u.f != 0.0f;
 			}
 			else
 			{
-				if (eval->valStack[eval->valStackPos - 3].u.d == 0.0)
-					v14 = -1;
-				else
-					v14 = -2;
-				v13 = v14;
+				if (condition->type != EVAL_VALUE_INT)
+					throw std::runtime_error("can only switch on numbers");
+				conditionTrue = condition->u.i != 0;
 			}
-			if (eval->valStack[eval->valStackPos - 2].type != 2 || eval->valStack[eval->valStackPos - 1].type != 2)
+
+			EvalValue* selected = conditionTrue ? lhs : rhs;
+			if (lhs->type == EVAL_VALUE_STRING && rhs->type == EVAL_VALUE_STRING)
+				free((conditionTrue ? rhs : lhs)->u.s);
+			else
 				Eval_PrepareBinaryOpSameTypes(eval);
-			else
-				free(eval->valStack[1 - v13 + eval->valStackPos].u.s);
-			v8 = &eval->valStack[v13 + eval->valStackPos];
-			v9 = &eval->valStack[eval->valStackPos - 3];
-			v9->type = v8->type;
-			*(&v9->type + 1) = *(&v8->type + 1);
-			v9->u.i = v8->u.i;
-			*(&v9->u.s + 1) = *(&v8->u.s + 1);
+
+			*condition = *selected;
 			eval->valStackPos -= 2;
 			--eval->opStackPos;
-			return 1;
-		case 1:
+			return true;
+		}
+		case EVAL_OP_QUESTION:
 			__debugbreak();
-			return 0;
-		case 2:
-			if (eval->valStackPos < 2
-				|| eval->valStack[eval->valStackPos - 2].type != 2
-				|| eval->valStack[eval->valStackPos - 1].type != 2)
+			return false;
+		case EVAL_OP_PLUS:
+			if (lhs->type != EVAL_VALUE_STRING || rhs->type != EVAL_VALUE_STRING)
 			{
 				Eval_PrepareBinaryOpSameTypes(eval);
-				if (eval->valStack[eval->valStackPos - 2].type)
-					eval->valStack[eval->valStackPos - 2].u.i += eval->valStack[eval->valStackPos - 1].u.i;
+				if (lhs->type == EVAL_VALUE_INT)
+					lhs->u.i += rhs->u.i;
 				else
-					eval->valStack[eval->valStackPos - 2].u.d = eval->valStack[eval->valStackPos - 2].u.d
-					+ eval->valStack[eval->valStackPos - 1].u.d;
+					lhs->u.f += rhs->u.f;
 			}
 			else
 			{
-				v38 = eval->valStack[eval->valStackPos - 2].u.s;
-				length[1] = (int)(v38 + 1);
-				v37 = (unsigned int)&v38[strlen(v38) + 1];
-				v35 = v37 - (char)(v38 + 1);
-				v33 = v37 - (char)(v38 + 1);
-				v32 = eval->valStack[eval->valStackPos - 1].u.i;
-				s = (char*)(v32 + 1);
-				v31 = v32 + strlen((const char*)v32) + 1;
-				v29 = v31 - (v32 + 1);
-				v34 = v31 - (v32 + 1);
-				v28 = (unsigned __int8*)malloc(v33 + v31 - v32);
-				memcpy(v28, (unsigned __int8*)eval->valStack[eval->valStackPos - 2].u.i, v33);
-				memcpy(&v28[v33], (unsigned __int8*)eval->valStack[eval->valStackPos - 1].u.i, v31 - v32);
-				free(eval->valStack[eval->valStackPos - 2].u.s);
-				free(eval->valStack[eval->valStackPos - 1].u.s);
-				eval->valStack[eval->valStackPos - 2].u.i = (int)v28;
+				char* concatenated = (char*)malloc(strlen(lhs->u.s) + strlen(rhs->u.s) + 1);
+				strcpy(concatenated, lhs->u.s);
+				strcat(concatenated, rhs->u.s);
+				free(lhs->u.s);
+				free(rhs->u.s);
+				lhs->u.s = concatenated;
 			}
 			--eval->valStackPos;
 			break;
-		case 3:
+		case EVAL_OP_MINUS:
 			Eval_PrepareBinaryOpSameTypes(eval);
-			if (eval->valStack[eval->valStackPos - 2].type)
-				eval->valStack[eval->valStackPos - 2].u.i -= eval->valStack[eval->valStackPos - 1].u.i;
+			if (lhs->type == EVAL_VALUE_INT)
+				lhs->u.i -= rhs->u.i;
 			else
-				eval->valStack[eval->valStackPos - 2].u.d = eval->valStack[eval->valStackPos - 2].u.d
-				- eval->valStack[eval->valStackPos - 1].u.d;
+				lhs->u.f -= rhs->u.f;
 			--eval->valStackPos;
 			break;
-		case 4:
-			return 1;
-		case 5:
-			if (eval->valStack[eval->valStackPos - 1].type == 1)
+		case EVAL_OP_UNARY_PLUS:
+			break;
+		case EVAL_OP_UNARY_MINUS:
+			if (rhs->type == EVAL_VALUE_INT)
 			{
-				eval->valStack[eval->valStackPos - 1].u.i = -eval->valStack[eval->valStackPos - 1].u.i;
+				rhs->u.i = -rhs->u.i;
 			}
 			else
 			{
-				if (eval->valStack[eval->valStackPos - 1].type)
-				{
-					pExceptionObject = "cannot negate strings";
-					throw std::exception(pExceptionObject);
-				}
-				eval->valStack[eval->valStackPos - 1].u.d = -eval->valStack[eval->valStackPos - 1].u.d;
+				if (rhs->type == EVAL_VALUE_STRING)
+					throw std::runtime_error("cannot negate strings");
+				rhs->u.f = -rhs->u.f;
 			}
 			break;
-		case 6:
+		case EVAL_OP_MULTIPLY:
 			Eval_PrepareBinaryOpSameTypes(eval);
-			if (eval->valStack[eval->valStackPos - 2].type)
-				eval->valStack[eval->valStackPos - 2].u.i *= eval->valStack[eval->valStackPos - 1].u.i;
+			if (lhs->type == EVAL_VALUE_INT)
+				lhs->u.i *= rhs->u.i;
 			else
-				eval->valStack[eval->valStackPos - 2].u.d = eval->valStack[eval->valStackPos - 2].u.d
-				* eval->valStack[eval->valStackPos - 1].u.d;
+				lhs->u.f *= rhs->u.f;
 			--eval->valStackPos;
 			break;
-		case 7:
+		case EVAL_OP_DIVIDE:
 			Eval_PrepareBinaryOpSameTypes(eval);
-			if (eval->valStack[eval->valStackPos - 2].type)
+			if (lhs->type == EVAL_VALUE_INT)
 			{
-				if (!eval->valStack[eval->valStackPos - 1].u.i)
-				{
-					pExceptionObject = "divide by zero";
-					throw std::exception(pExceptionObject);
-				}
-				eval->valStack[eval->valStackPos - 2].u.i /= eval->valStack[eval->valStackPos - 1].u.i;
+				if (!rhs->u.i)
+					throw std::runtime_error("divide by zero");
+				lhs->u.i /= rhs->u.i;
 			}
 			else
 			{
-				if (eval->valStack[eval->valStackPos - 1].u.d == 0.0)
-				{
-					pExceptionObject = "divide by zero";
-					throw std::exception(pExceptionObject);
-				}
-				eval->valStack[eval->valStackPos - 2].u.d = eval->valStack[eval->valStackPos - 2].u.d
-					/ eval->valStack[eval->valStackPos - 1].u.d;
+				if (rhs->u.f == 0.0f)
+					throw std::runtime_error("divide by zero");
+				lhs->u.f /= rhs->u.f;
 			}
 			--eval->valStackPos;
 			break;
-		case 8:
+		case EVAL_OP_MODULUS:
 			Eval_PrepareBinaryOpSameTypes(eval);
-			if (eval->valStack[eval->valStackPos - 2].type)
+			if (lhs->type == EVAL_VALUE_INT)
 			{
-				if (!eval->valStack[eval->valStackPos - 1].u.i)
-				{
-					pExceptionObject = "divide by zero";
-					throw std::exception(pExceptionObject);
-				}
-				eval->valStack[eval->valStackPos - 2].u.i %= eval->valStack[eval->valStackPos - 1].u.i;
+				if (!rhs->u.i)
+					throw std::runtime_error("divide by zero");
+				lhs->u.i %= rhs->u.i;
 			}
 			else
 			{
-				if (eval->valStack[eval->valStackPos - 1].u.d == 0.0)
-				{
-					pExceptionObject = "divide by zero";
-					throw std::exception(pExceptionObject);
-				}
-				v25 = floor(eval->valStack[eval->valStackPos - 2].u.d / eval->valStack[eval->valStackPos - 1].u.d);
-				eval->valStack[eval->valStackPos - 2].u.d = eval->valStack[eval->valStackPos - 2].u.d
-					- eval->valStack[eval->valStackPos - 1].u.d * v25;
+				if (rhs->u.f == 0.0)
+					throw std::runtime_error("divide by zero");
+				lhs->u.f -= rhs->u.f * floor(lhs->u.f / rhs->u.f);
 			}
 			--eval->valStackPos;
 			break;
-		case 9:
+		case EVAL_OP_LSHIFT:
 			Eval_PrepareBinaryOpSameTypes(eval);
-			if (eval->valStack[eval->valStackPos - 2].type)
-			{
-				eval->valStack[eval->valStackPos - 2].u.i <<= eval->valStack[eval->valStackPos - 1].u.i;
-			}
+			if (lhs->type == EVAL_VALUE_INT)
+				lhs->u.i <<= rhs->u.i;
 			else
-			{
-				v4 = eval->valStackPos - 2;
-				v5 = *(unsigned __int64*)&eval->valStack[eval->valStackPos - 1].u.d;
-				pow(v10, v11);
-				eval->valStack[eval->valStackPos - 2].u.d = 2.0 * eval->valStack[v4].u.d;
-			}
+				lhs->u.f = lhs->u.f * pow(2.0f, rhs->u.f);
 			--eval->valStackPos;
 			break;
-		case 10:
+		case EVAL_OP_RSHIFT:
 			Eval_PrepareBinaryOpSameTypes(eval);
-			if (eval->valStack[eval->valStackPos - 2].type)
-			{
-				eval->valStack[eval->valStackPos - 2].u.i >>= eval->valStack[eval->valStackPos - 1].u.i;
-			}
+			if (lhs->type == EVAL_VALUE_INT)
+				lhs->u.i >>= rhs->u.i;
 			else
-			{
-				v6 = eval->valStackPos - 2;
-				v7 = -eval->valStack[eval->valStackPos - 1].u.d;
-				pow(v10, v11);
-				eval->valStack[eval->valStackPos - 2].u.d = 2.0 * eval->valStack[v6].u.d;
-			}
+				lhs->u.f = lhs->u.f * pow(2.0f, -rhs->u.f);
 			--eval->valStackPos;
 			break;
-		case 11:
-			if (eval->valStack[eval->valStackPos - 1].type)
+		case EVAL_OP_BITWISE_NOT:
+			if (rhs->type == EVAL_VALUE_FLOAT)
 			{
-				if (eval->valStack[eval->valStackPos - 2].type == 2)
-				{
-					pExceptionObject = "cannot bitwise invert strings";
-					throw std::exception(pExceptionObject);
-				}
+				rhs->u.i = (signed int)rhs->u.f;
+				rhs->type = EVAL_VALUE_INT;
 			}
-			else
+			else if (rhs->type == EVAL_VALUE_STRING)
 			{
-				eval->valStack[eval->valStackPos - 1].u.i = (signed int)eval->valStack[eval->valStackPos - 1].u.d;
-				eval->valStack[eval->valStackPos - 1].type = EVAL_VALUE_INT;
+				throw std::runtime_error("cannot bitwise invert strings");
 			}
-			eval->valStack[eval->valStackPos - 1].u.i = ~eval->valStack[eval->valStackPos - 1].u.i;
+			rhs->u.i = ~rhs->u.i;
 			break;
-		case 12:
+		case EVAL_OP_BITWISE_AND:
 			Eval_PrepareBinaryOpIntegers(eval);
-			eval->valStack[eval->valStackPos - 2].u.i &= eval->valStack[eval->valStackPos - 1].u.i;
+			lhs->u.i &= rhs->u.i;
 			--eval->valStackPos;
 			break;
-		case 13:
+		case EVAL_OP_BITWISE_OR:
 			Eval_PrepareBinaryOpIntegers(eval);
-			eval->valStack[eval->valStackPos - 2].u.i |= eval->valStack[eval->valStackPos - 1].u.i;
+			lhs->u.i |= rhs->u.i;
 			--eval->valStackPos;
 			break;
-		case 14:
+		case EVAL_OP_BITWISE_XOR:
 			Eval_PrepareBinaryOpIntegers(eval);
-			eval->valStack[eval->valStackPos - 2].u.i ^= eval->valStack[eval->valStackPos - 1].u.i;
+			lhs->u.i ^= rhs->u.i;
 			--eval->valStackPos;
 			break;
-		case 15:
-			if (eval->valStack[eval->valStackPos - 1].type)
+		case EVAL_OP_LOGICAL_NOT:
+			if (rhs->type == EVAL_VALUE_FLOAT)
 			{
-				if (eval->valStack[eval->valStackPos - 1].type != 1)
-				{
-					pExceptionObject = "cannot logical invert strings";
-					throw std::exception(pExceptionObject);;
-				}
-				eval->valStack[eval->valStackPos - 1].u.i = eval->valStack[eval->valStackPos - 1].u.i == 0;
+				rhs->u.i = rhs->u.f == 0.0;
 			}
 			else
 			{
-				v41 = eval->valStack[eval->valStackPos - 1].u.d == 0.0;
-				eval->valStack[eval->valStackPos - 1].u.i = v41;
+				if (rhs->type != EVAL_VALUE_INT)
+					throw std::runtime_error("cannot logical invert strings");
+				rhs->u.i = rhs->u.i == 0;
 			}
-			eval->valStack[eval->valStackPos - 1].type = EVAL_VALUE_INT;
+			rhs->type = EVAL_VALUE_INT;
 			break;
-		case 16:
+		case EVAL_OP_LOGICAL_AND:
 			Eval_PrepareBinaryOpBoolean(eval);
-			eval->valStack[eval->valStackPos - 2].u.i &= eval->valStack[eval->valStackPos - 1].u.i;
+			lhs->u.i &= rhs->u.i;
 			--eval->valStackPos;
 			break;
-		case 17:
+		case EVAL_OP_LOGICAL_OR:
 			Eval_PrepareBinaryOpBoolean(eval);
-			eval->valStack[eval->valStackPos - 2].u.i |= eval->valStack[eval->valStackPos - 1].u.i;
+			lhs->u.i |= rhs->u.i;
 			--eval->valStackPos;
 			break;
-		case 18:
-			if (eval->valStackPos < 2
-				|| eval->valStack[eval->valStackPos - 2].type != 2
-				|| eval->valStack[eval->valStackPos - 1].type != 2)
+		case EVAL_OP_EQUALS:
+			if (lhs->type != EVAL_VALUE_STRING || rhs->type != EVAL_VALUE_STRING)
 			{
 				Eval_PrepareBinaryOpSameTypes(eval);
-				if (eval->valStack[eval->valStackPos - 2].type)
+				if (lhs->type == EVAL_VALUE_INT)
 				{
-					eval->valStack[eval->valStackPos - 2].u.i = eval->valStack[eval->valStackPos - 2].u.i == eval->valStack[eval->valStackPos - 1].u.i;
+					lhs->u.i = lhs->u.i == rhs->u.i;
 				}
 				else
 				{
-					v22 = eval->valStack[eval->valStackPos - 2].u.d == eval->valStack[eval->valStackPos - 1].u.d;
-					eval->valStack[eval->valStackPos - 2].u.i = v22;
-					eval->valStack[eval->valStackPos - 2].type = EVAL_VALUE_INT;
+					lhs->u.i = lhs->u.f == rhs->u.f;
+					lhs->type = EVAL_VALUE_INT;
 				}
 			}
 			else
 			{
-				v23 = _stricmp(eval->valStack[eval->valStackPos - 2].u.s, eval->valStack[eval->valStackPos - 1].u.s) == 0;
-				free(eval->valStack[eval->valStackPos - 2].u.s);
-				free(eval->valStack[eval->valStackPos - 1].u.s);
-				eval->valStack[eval->valStackPos - 2].type = EVAL_VALUE_INT;
-				eval->valStack[eval->valStackPos - 2].u.i = v23;
+				bool equal = _stricmp(lhs->u.s, rhs->u.s) == 0;
+				free(lhs->u.s);
+				free(rhs->u.s);
+				lhs->type = EVAL_VALUE_INT;
+				lhs->u.i = equal;
 			}
 			--eval->valStackPos;
 			break;
-		case 19:
-			if (eval->valStackPos < 2
-				|| eval->valStack[eval->valStackPos - 2].type != 2
-				|| eval->valStack[eval->valStackPos - 1].type != 2)
+		case EVAL_OP_NOT_EQUAL:
+			if (lhs->type != EVAL_VALUE_STRING || rhs->type != EVAL_VALUE_STRING)
 			{
 				Eval_PrepareBinaryOpSameTypes(eval);
-				if (eval->valStack[eval->valStackPos - 2].type)
+				if (lhs->type == EVAL_VALUE_INT)
 				{
-					eval->valStack[eval->valStackPos - 2].u.i = eval->valStack[eval->valStackPos - 2].u.i != eval->valStack[eval->valStackPos - 1].u.i;
+					lhs->u.i = lhs->u.i != rhs->u.i;
 				}
 				else
 				{
-					v20 = eval->valStack[eval->valStackPos - 2].u.d != eval->valStack[eval->valStackPos - 1].u.d;
-					eval->valStack[eval->valStackPos - 2].u.i = v20;
-					eval->valStack[eval->valStackPos - 2].type = EVAL_VALUE_INT;
+					lhs->u.i = lhs->u.f != rhs->u.f;
+					lhs->type = EVAL_VALUE_INT;
 				}
 			}
 			else
 			{
-				v21 = _stricmp(eval->valStack[eval->valStackPos - 2].u.s, eval->valStack[eval->valStackPos - 1].u.s) == 0;
-				free(eval->valStack[eval->valStackPos - 2].u.s);
-				free(eval->valStack[eval->valStackPos - 1].u.s);
-				eval->valStack[eval->valStackPos - 2].type = EVAL_VALUE_INT;
-				eval->valStack[eval->valStackPos - 2].u.i = v21 == 0;
+				bool equal = _stricmp(lhs->u.s, rhs->u.s) == 0;
+				free(lhs->u.s);
+				free(rhs->u.s);
+				lhs->type = EVAL_VALUE_INT;
+				lhs->u.i = equal == 0;
 			}
 			--eval->valStackPos;
 			break;
-		case 20:
+		case EVAL_OP_LESS:
 			Eval_PrepareBinaryOpSameTypes(eval);
-			if (eval->valStack[eval->valStackPos - 2].type)
+			if (lhs->type == EVAL_VALUE_INT)
 			{
-				eval->valStack[eval->valStackPos - 2].u.i = eval->valStack[eval->valStackPos - 2].u.i < eval->valStack[eval->valStackPos - 1].u.i;
+				lhs->u.i = lhs->u.i < rhs->u.i;
 			}
 			else
 			{
-				v19 = eval->valStack[eval->valStackPos - 1].u.d > eval->valStack[eval->valStackPos - 2].u.d;
-				eval->valStack[eval->valStackPos - 2].u.i = v19;
-				eval->valStack[eval->valStackPos - 2].type = EVAL_VALUE_INT;
+				lhs->u.i = rhs->u.f > lhs->u.f;
+				lhs->type = EVAL_VALUE_INT;
 			}
 			--eval->valStackPos;
 			break;
-		case 21:
+		case EVAL_OP_LESS_EQUAL:
 			Eval_PrepareBinaryOpSameTypes(eval);
-			if (eval->valStack[eval->valStackPos - 2].type)
+			if (lhs->type == EVAL_VALUE_INT)
 			{
-				eval->valStack[eval->valStackPos - 2].u.i = eval->valStack[eval->valStackPos - 2].u.i <= eval->valStack[eval->valStackPos - 1].u.i;
+				lhs->u.i = lhs->u.i <= rhs->u.i;
 			}
 			else
 			{
-				v18 = eval->valStack[eval->valStackPos - 1].u.d >= eval->valStack[eval->valStackPos - 2].u.d;
-				eval->valStack[eval->valStackPos - 2].u.i = v18;
-				eval->valStack[eval->valStackPos - 2].type = EVAL_VALUE_INT;
+				lhs->u.i = rhs->u.f >= lhs->u.f;
+				lhs->type = EVAL_VALUE_INT;
 			}
 			--eval->valStackPos;
 			break;
-		case 22:
+		case EVAL_OP_GREATER:
 			Eval_PrepareBinaryOpSameTypes(eval);
-			if (eval->valStack[eval->valStackPos - 2].type)
+			if (lhs->type == EVAL_VALUE_INT)
 			{
-				eval->valStack[eval->valStackPos - 2].u.i = eval->valStack[eval->valStackPos - 2].u.i > eval->valStack[eval->valStackPos - 1].u.i;
+				lhs->u.i = lhs->u.i > rhs->u.i;
 			}
 			else
 			{
-				v17 = eval->valStack[eval->valStackPos - 2].u.d > eval->valStack[eval->valStackPos - 1].u.d;
-				eval->valStack[eval->valStackPos - 2].u.i = v17;
-				eval->valStack[eval->valStackPos - 2].type = EVAL_VALUE_INT;
+				lhs->u.i = lhs->u.f > rhs->u.f;
+				lhs->type = EVAL_VALUE_INT;
 			}
 			--eval->valStackPos;
 			break;
-		case 23:
+		case EVAL_OP_GREATER_EQUAL:
 			Eval_PrepareBinaryOpSameTypes(eval);
-			if (eval->valStack[eval->valStackPos - 2].type)
+			if (lhs->type == EVAL_VALUE_INT)
 			{
-				eval->valStack[eval->valStackPos - 2].u.i = eval->valStack[eval->valStackPos - 2].u.i >= eval->valStack[eval->valStackPos - 1].u.i;
+				lhs->u.i = lhs->u.i >= rhs->u.i;
 			}
 			else
 			{
-				i = eval->valStack[eval->valStackPos - 2].u.d >= eval->valStack[eval->valStackPos - 1].u.d;
-				eval->valStack[eval->valStackPos - 2].u.i = i;
-				eval->valStack[eval->valStackPos - 2].type = EVAL_VALUE_INT;
+				lhs->u.i = lhs->u.f >= rhs->u.f;
+				lhs->type = EVAL_VALUE_INT;
 			}
 			--eval->valStackPos;
+			break;
+		default:
 			break;
 		}
-		return 1;
+		return true;
 	}
 
 	char s_precedence[26] =
@@ -4907,21 +4646,14 @@ namespace zonetool::h1
 
 	bool Eval_PushOperator(Eval* eval, EvalOperatorType op)
 	{
-		bool result;
-		bool v8;
-		const char* pExceptionObject;
-		bool leftToRight;
-		char precedence;
-		bool higherPrecedence;
-
 		if (s_precedence[op] < 0)
-			return 0;
+			return false;
 		if (op == EVAL_OP_RPAREN && !eval->parenCount)
-			return 0;
+			return false;
 		if (op == EVAL_OP_LPAREN)
 		{
 			if (eval->valStackPos && !eval->pushedOp)
-				return 0;
+				return false;
 			++eval->parenCount;
 		}
 		if (op == EVAL_OP_PLUS)
@@ -4937,50 +4669,39 @@ namespace zonetool::h1
 		{
 			__debugbreak();
 		}
-		precedence = s_precedence[op];
+		char precedence = s_precedence[op];
 		while (eval->opStackPos > 0)
 		{
-			higherPrecedence = s_precedence[eval->opStack[eval->opStackPos - 1]] > precedence;
-			v8 = s_precedence[eval->opStack[eval->opStackPos - 1]] == precedence
-				&& !s_rightToLeft[eval->opStack[eval->opStackPos - 1]];
-			leftToRight = v8;
+			EvalOperatorType top = eval->opStack[eval->opStackPos - 1];
+			bool higherPrecedence = s_precedence[top] > precedence;
+			bool leftToRight = s_precedence[top] == precedence && !s_rightToLeft[top];
 			if (!higherPrecedence && !leftToRight)
 				break;
-			if (eval->opStack[eval->opStackPos - 1] == EVAL_OP_LPAREN)
+			if (top == EVAL_OP_LPAREN)
 			{
 				if (op == EVAL_OP_RPAREN)
 				{
 					--eval->parenCount;
 					--eval->opStackPos;
 					eval->pushedOp = 0;
-					return 1;
+					return true;
 				}
 				break;
 			}
 			if (!Eval_EvaluationStep(eval))
-				return 0;
+				return false;
 		}
 		if (op != EVAL_OP_COLON || eval->opStackPos && eval->opStack[eval->opStackPos - 1] == EVAL_OP_QUESTION)
 		{
 			if (eval->opStackPos == 1024)
-			{
-				pExceptionObject = "evaluation stack overflow - expression is too complex";
-				throw std::exception(pExceptionObject);
-			}
+				throw std::runtime_error("evaluation stack overflow - expression is too complex");
 			eval->opStack[eval->opStackPos++] = op;
 			eval->pushedOp = 1;
-			result = 1;
+			return true;
 		}
-		else
-		{
-			if (eval->parenCount)
-			{
-				pExceptionObject = "found ':' without preceding '?' in expression of type 'a ? b : c'";
-				throw std::exception(pExceptionObject);
-			}
-			result = 0;
-		}
-		return result;
+		if (eval->parenCount)
+			throw std::runtime_error("found ':' without preceding '?' in expression of type 'a ? b : c'");
+		return false;
 	}
 
 	bool Eval_AnyMissingOperands(const Eval* eval)
@@ -4996,100 +4717,90 @@ namespace zonetool::h1
 
 	EvalValue* Eval_Solve(EvalValue* result, Eval* eval)
 	{
-		const char* pExceptionObject;
-
 		if (!(eval->parenCount == 0))
-		{
-			pExceptionObject = "missing ')'";
-			throw std::exception(pExceptionObject);
-		}
+			throw std::runtime_error("missing ')'");
 		while (Eval_EvaluationStep(eval));
 		if (eval->opStackPos)
 		{
 			__debugbreak();
 		}
 		if (eval->valStackPos > 1)
-		{
-			pExceptionObject = "extra operand (for example, 'a b +')";
-			throw std::exception(pExceptionObject);
-		}
+			throw std::runtime_error("extra operand (for example, 'a b +')");
 		*result = eval->valStack[0];
 		return result;
 	}
 
-	bool PC_Float_Expression_Parse(/*int handle,*/ float* f)
+	bool PC_Float_Expression_Parse(float* f)
 	{
-		EvalValue result;
-		EvalOperatorType op;
 		Eval eval;
-		int v14;
-		pc_token_s pc_token;
-
 		eval.opStackPos = 0;
 		eval.valStackPos = 0;
 		eval.parenCount = 0;
 		eval.pushedOp = 0;
-		v14 = 0;
+
+		int openParens = 0;
+		EvalOperatorType op;
+		pc_token_s pc_token;
 		while (1)
 		{
-			while (1)
+			if (!PC_ReadTokenHandle(&pc_token))
+				return false;
+			if (pc_token.type == TT_NUMBER)
 			{
-				if (!PC_ReadTokenHandle(/*handle,*/ &pc_token))
-					return 0;
-				if (pc_token.type != 3)
-					break;
 				if (!Eval_PushNumber(&eval, pc_token.floatvalue))
-					goto LABEL_6;
+				{
+					PC_SourceError("error evaluating expression");
+					return false;
+				}
+				continue;
 			}
 			if (!Eval_OperatorForToken(pc_token.string, &op))
 			{
-				PC_SourceError(/*handle,*/ "expected operator but found %s", pc_token.string);
-				return 0;
+				PC_SourceError("expected operator but found %s", pc_token.string);
+				return false;
 			}
 			if (op == EVAL_OP_RPAREN)
-				break;
-			if (op == EVAL_OP_LPAREN && ++v14 > 16)
 			{
-				PC_SourceError(/*handle,*/ "too much recursive macro expansion");
-				return 0;
+				if (!openParens)
+					break;
+				--openParens;
 			}
-		LABEL_16:
+			else if (op == EVAL_OP_LPAREN && ++openParens > 16)
+			{
+				PC_SourceError("too much recursive macro expansion");
+				return false;
+			}
 			Eval_PushOperator(&eval, op);
-		}
-		if (v14)
-		{
-			--v14;
-			goto LABEL_16;
 		}
 		if (Eval_AnyMissingOperands(&eval))
 		{
-		LABEL_6:
-			PC_SourceError(/*handle,*/ "error evaluating expression");
-			return 0;
+			PC_SourceError("error evaluating expression");
+			return false;
 		}
+		EvalValue result;
 		Eval_Solve(&result, &eval);
-		if (result.type != EVAL_VALUE_DOUBLE)
+		if (result.type != EVAL_VALUE_FLOAT)
 		{
 			__debugbreak();
 		}
-		*f = result.u.d;
-		return 1;
+		*f = result.u.f;
+		return true;
 	}
 
-	bool PC_Float_Parse(/*int handle,*/ float* f)
+	bool PC_Float_Parse(float* f)
 	{
 		pc_token_s token;
 		int negative;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (token.string[0] == '(')
-			return PC_Float_Expression_Parse(/*handle,*/ f);
+			return PC_Float_Expression_Parse(f);
 		negative = 0;
 		if (token.string[0] == '-')
 		{
-			if (!PC_ReadTokenHandle(/*handle,*/ &token))
-				return 0;
+			if (!PC_ReadTokenHandle(&token))
+				return false;
 			negative = 1;
 		}
 		if (token.type == TT_NUMBER)
@@ -5098,89 +4809,86 @@ namespace zonetool::h1
 				*f = -token.floatvalue;
 			else
 				*f = token.floatvalue;
-			return 1;
+			return true;
 		}
 		else
 		{
-			PC_SourceError(/*handle,*/ "expected float but found %s", token.string);
-			return 0;
+			PC_SourceError("expected float but found %s", token.string);
+			return false;
 		}
-		return 0;
 	}
 
-	bool PC_Int_Expression_Parse(/*int handle,*/ int* i)
+	bool PC_Int_Expression_Parse(int* i)
 	{
-		EvalValue result;
-		EvalOperatorType op;
 		Eval eval;
-		int v13;
-		pc_token_s pc_token;
-
 		eval.opStackPos = 0;
 		eval.valStackPos = 0;
 		eval.parenCount = 0;
 		eval.pushedOp = 0;
-		v13 = 0;
+
+		int openParens = 0;
+		EvalOperatorType op;
+		pc_token_s pc_token;
 		while (1)
 		{
-			while (1)
+			if (!PC_ReadTokenHandle(&pc_token))
+				return false;
+			if (pc_token.type == TT_NUMBER)
 			{
-				if (!PC_ReadTokenHandle(/*handle,*/ &pc_token))
-					return 0;
-				if (pc_token.type != 3)
-					break;
 				if (!Eval_PushInteger(&eval, pc_token.intvalue))
-					goto LABEL_6;
+				{
+					PC_SourceError("error evaluating expression");
+					return false;
+				}
+				continue;
 			}
 			if (!Eval_OperatorForToken(pc_token.string, &op))
 			{
-				PC_SourceError(/*handle,*/ "expected operator but found %s", pc_token.string);
-				return 0;
+				PC_SourceError("expected operator but found %s", pc_token.string);
+				return false;
 			}
 			if (op == EVAL_OP_RPAREN)
-				break;
-			if (op == EVAL_OP_LPAREN && ++v13 > 16)
 			{
-				PC_SourceError(/*handle,*/ "too much recursive macro expansion");
-				return 0;
+				if (!openParens)
+					break;
+				--openParens;
 			}
-		LABEL_16:
+			else if (op == EVAL_OP_LPAREN && ++openParens > 16)
+			{
+				PC_SourceError("too much recursive macro expansion");
+				return false;
+			}
 			Eval_PushOperator(&eval, op);
-		}
-		if (v13)
-		{
-			--v13;
-			goto LABEL_16;
 		}
 		if (Eval_AnyMissingOperands(&eval))
 		{
-		LABEL_6:
-			PC_SourceError(/*handle,*/ "error evaluating expression");
-			return 0;
+			PC_SourceError("error evaluating expression");
+			return false;
 		}
+		EvalValue result;
 		Eval_Solve(&result, &eval);
 		if (result.type != EVAL_VALUE_INT)
 		{
 			__debugbreak();
 		}
 		*i = result.u.i;
-		return 1;
+		return true;
 	}
 
-	bool PC_Int_Parse(/*int handle,*/ int* i)
+	bool PC_Int_Parse(int* i)
 	{
 		pc_token_s token;
 		int negative;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (token.string[0] == '(')
-			return PC_Int_Expression_Parse(/*handle,*/ i);
+			return PC_Int_Expression_Parse(i);
 		negative = 0;
 		if (token.string[0] == '-')
 		{
-			if (!PC_ReadTokenHandle(/*handle,*/ &token))
-				return 0;
+			if (!PC_ReadTokenHandle(&token))
+				return false;
 			negative = 1;
 		}
 		if (token.type == TT_NUMBER)
@@ -5188,28 +4896,27 @@ namespace zonetool::h1
 			*i = token.intvalue;
 			if (negative)
 				*i = -*i;
-			return 1;
+			return true;
 		}
 		else
 		{
-			PC_SourceError(/*handle,*/ "expected integer but found %s", token.string);
-			return 0;
+			PC_SourceError("expected integer but found %s", token.string);
+			return false;
 		}
-		return 0;
 	}
 
-	bool PC_Int_ParseLine(/*int handle,*/ int* i)
+	bool PC_Int_ParseLine(int* i)
 	{
 		pc_token_s token;
 		int negative;
 
-		if (!PC_ReadLineHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadLineHandle(&token))
+			return false;
 		negative = 0;
 		if (token.string[0] == '-')
 		{
-			if (!PC_ReadLineHandle(/*handle,*/ &token))
-				return 0;
+			if (!PC_ReadLineHandle(&token))
+				return false;
 			negative = 1;
 		}
 		if (token.type == TT_NUMBER)
@@ -5217,145 +4924,139 @@ namespace zonetool::h1
 			*i = token.intvalue;
 			if (negative)
 				*i = -*i;
-			return 1;
+			return true;
 		}
 		else
 		{
-			PC_SourceError(/*handle,*/ "expected integer but found %s", token.string);
-			return 0;
+			PC_SourceError("expected integer but found %s", token.string);
+			return false;
 		}
-		return 0;
 	}
 
-	bool PC_Byte_Parse(/*int handle,*/ unsigned __int8* b)
+	bool PC_Byte_Parse(unsigned char* b)
 	{
 		int i;
 
-		if (!PC_Int_Parse(/*handle,*/ &i))
-			return 0;
+		if (!PC_Int_Parse(&i))
+			return false;
 		if (i >= 0 && i <= 255)
 		{
-			*b = i;
-			return 1;
+			*b = (unsigned char)i;
+			return true;
 		}
 		else
 		{
-			PC_SourceError(/*handle,*/ "expect int value between 0 and 255, but got '%d'", i);
-			return 0;
+			PC_SourceError("expect int value between 0 and 255, but got '%d'", i);
+			return false;
 		}
-		return 1;
 	}
 
-	bool PC_Char_Parse(/*int handle,*/ char* out)
+	bool PC_Char_Parse(char* out)
 	{
 		pc_token_s token;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		*out = token.string[0];
-		return 1;
+		return true;
 	}
 
-	bool PC_Color_Parse(/*int handle,*/ vec4_t* c)
+	bool PC_Color_Parse(vec4_t* c)
 	{
 		float f;
 		int i;
 
 		for (i = 0; i < 4; ++i)
 		{
-			if (!PC_Float_Parse(/*handle,*/ &f))
-				return 0;
+			if (!PC_Float_Parse(&f))
+				return false;
 			(*c)[i] = f;
 		}
-		return 1;
+		return true;
 	}
 
-	bool PC_Flag_ParseOptional(/*int handle,*/ int* i)
+	bool PC_Flag_ParseOptional(int* i)
 	{
 		pc_token_s token;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (token.type == TT_NUMBER)
 		{
 			*i = token.intvalue;
-			return 1;
+			return true;
 		}
 		else
 		{
-			PC_UnreadLastTokenHandle(/*handle*/);
+			PC_UnreadLastTokenHandle();
 		}
-		return 0;
+		return false;
 	}
 
-	bool PC_Rect_Parse(/*int handle,*/ rectDef_s* r)
+	bool PC_Rect_Parse(rectDef_s* r)
 	{
 		int horzAlign;
 		int vertAlign;
 
-		if (!PC_Float_Parse(/*handle,*/ &r->x)
-			|| !PC_Float_Parse(/*handle,*/ &r->y)
-			|| !PC_Float_Parse(/*handle,*/ &r->w)
-			|| !PC_Float_Parse(/*handle,*/ &r->h))
+		if (!PC_Float_Parse(&r->x)
+			|| !PC_Float_Parse(&r->y)
+			|| !PC_Float_Parse(&r->w)
+			|| !PC_Float_Parse(&r->h))
 		{
-			return 0;
+			return false;
 		}
 
 		r->horzAlign = 0;
 		r->vertAlign = 0;
-		if (PC_Flag_ParseOptional(/*handle,*/ &horzAlign))
+		if (PC_Flag_ParseOptional(&horzAlign))
 		{
-			r->horzAlign = horzAlign;
-			if (PC_Flag_ParseOptional(/*handle,*/ &vertAlign))
+			r->horzAlign = (unsigned char)horzAlign;
+			if (PC_Flag_ParseOptional(&vertAlign))
 			{
-				r->vertAlign = vertAlign;
+				r->vertAlign = (unsigned char)vertAlign;
 			}
 		}
 
-		return 1;
+		return true;
 	}
 
-	bool PC_Script_Parse(/*int handle,*/ const char** out) // not tested
+	bool PC_Script_Parse(const char** out)
 	{
 		char dst[0x1400];
 		pc_token_s pc_token;
 
 		memset(dst, 0, sizeof(dst));
-		if (!PC_ReadTokenHandle(/*handle,*/ &pc_token))
-			return 0;
+		if (!PC_ReadTokenHandle(&pc_token))
+			return false;
 		if (_stricmp(pc_token.string, "{"))
-			return 0;
+			return false;
 		do
 		{
-			if (!PC_ReadTokenHandle(/*handle,*/ &pc_token))
-				return 0;
+			if (!PC_ReadTokenHandle(&pc_token))
+				return false;
 			if (!_stricmp(pc_token.string, "}"))
 			{
 				*out = zmem->duplicate_string(dst);
-				return 1;
+				return true;
 			}
 			if (strlen(pc_token.string) + &dst[strlen(dst) + 1] - &dst[1] > sizeof(dst))
 				break;
-			if (pc_token.type <= 0)
-				goto LABEL_16;
-			if (pc_token.type <= 2)
+			if (pc_token.type <= 0 || (pc_token.type > 2 && pc_token.type != 6))
+			{
+				snprintf(dst + strlen(dst), sizeof(dst), "%s", pc_token.string);
+				if (pc_token.type != TT_PUNCTUATION || pc_token.subtype != P_SUB)
+					snprintf(dst + strlen(dst), sizeof(dst), "%s", " ");
+			}
+			else if (pc_token.type <= 2)
 			{
 				snprintf(dst + strlen(dst), sizeof(dst), "\"%s\" ", pc_token.string);
 			}
-			else if (pc_token.type != 6)
-			{
-			LABEL_16:
-				snprintf(dst + strlen(dst), sizeof(dst), "%s", pc_token.string);
-				if (pc_token.type != 5 || pc_token.subtype != 30)
-					snprintf(dst + strlen(dst), sizeof(dst), "%s", " ");
-				continue;
-			}
 		} while ((unsigned int)(&dst[strlen(dst) + 1] - &dst[1] + 1) <= sizeof(dst));
-		PC_SourceError(/*handle,*/ "action block too long that starts with: %s", dst);
-		return 0;
+		PC_SourceError("action block too long that starts with: %s", dst);
+		return false;
 	}
 
-	bool PC_EventScript_Parse(/*int handle,*/ MenuEventHandlerSet** eventHandlerSet)
+	bool PC_EventScript_Parse(MenuEventHandlerSet** eventHandlerSet)
 	{
 		pc_token_s token;
 		MenuEventHandler* eventHandler;
@@ -5365,26 +5066,26 @@ namespace zonetool::h1
 		*eventHandlerSet = zmem->allocate<MenuEventHandlerSet>();
 		(*eventHandlerSet)->eventHandlers = zmem->allocate<MenuEventHandler*>(MAX_EVENT_HANDLERS_PER_EVENT);
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (token.string[0] != '{')
 		{
-			PC_SourceError(/*handle,*/ "Expected '{'.");
-			return 0;
+			PC_SourceError("Expected '{'.");
+			return false;
 		}
 
 		while (1)
 		{
-			if (!PC_ReadTokenHandle(/*handle,*/ &token))
+			if (!PC_ReadTokenHandle(&token))
 			{
-				PC_SourceError(/*handle,*/ "Unexpected end of file.");
-				return 0;
+				PC_SourceError("Unexpected end of file.");
+				return false;
 			}
 
 			if ((*eventHandlerSet)->eventHandlerCount == MAX_EVENT_HANDLERS_PER_EVENT)
 			{
-				PC_SourceError(/*handle,*/ "Exceeded MAX_EVENT_HANDLERS_PER_EVENT(%d)", MAX_EVENT_HANDLERS_PER_EVENT);
-				return 0;
+				PC_SourceError("Exceeded MAX_EVENT_HANDLERS_PER_EVENT(%d)", MAX_EVENT_HANDLERS_PER_EVENT);
+				return false;
 			}
 
 			// end of event script
@@ -5410,15 +5111,15 @@ namespace zonetool::h1
 				eventHandler = zmem->allocate<MenuEventHandler>();
 				eventHandler->eventType = eventType;
 				eventHandler->eventData.conditionalScript = zmem->allocate<ConditionalScript>();
-				if (!Expression_Read(/*handle,*/ &eventHandler->eventData.conditionalScript->eventExpression))
+				if (!Expression_Read(&eventHandler->eventData.conditionalScript->eventExpression))
 				{
-					PC_SourceError(/*handle,*/ "Could not read expression.");
-					return 0;
+					PC_SourceError("Could not read expression.");
+					return false;
 				}
-				if (!PC_EventScript_Parse(/*handle,*/ &eventHandler->eventData.conditionalScript->eventHandlerSet))
+				if (!PC_EventScript_Parse(&eventHandler->eventData.conditionalScript->eventHandlerSet))
 				{
-					PC_SourceError(/*handle,*/ "Could not read event handler set.");
-					return 0;
+					PC_SourceError("Could not read event handler set.");
+					return false;
 				}
 				(*eventHandlerSet)->eventHandlers[(*eventHandlerSet)->eventHandlerCount++] = eventHandler;
 				continue;
@@ -5428,15 +5129,15 @@ namespace zonetool::h1
 				if (!(*eventHandlerSet)->eventHandlerCount ||
 					(*eventHandlerSet)->eventHandlers[(*eventHandlerSet)->eventHandlerCount - 1]->eventType != EVENT_IF)
 				{
-					PC_SourceError(/*handle,*/ "Misplaced 'else'.");
-					return 0;
+					PC_SourceError("Misplaced 'else'.");
+					return false;
 				}
 				eventHandler = zmem->allocate<MenuEventHandler>();
 				eventHandler->eventType = eventType;
-				if (!PC_EventScript_Parse(/*handle,*/ &eventHandler->eventData.elseScript))
+				if (!PC_EventScript_Parse(&eventHandler->eventData.elseScript))
 				{
-					PC_SourceError(/*handle,*/ "Could not read event handler set.");
-					return 0;
+					PC_SourceError("Could not read event handler set.");
+					return false;
 				}
 				(*eventHandlerSet)->eventHandlers[(*eventHandlerSet)->eventHandlerCount++] = eventHandler;
 				continue;
@@ -5446,19 +5147,19 @@ namespace zonetool::h1
 				eventType == EVENT_SET_LOCAL_VAR_FLOAT ||
 				eventType == EVENT_SET_LOCAL_VAR_STRING)
 			{
-				if (!PC_ReadTokenHandle(/*handle,*/ &token))
+				if (!PC_ReadTokenHandle(&token))
 				{
-					PC_SourceError(/*handle,*/ "Expected local var name.");
-					return 0;
+					PC_SourceError("Expected local var name.");
+					return false;
 				}
 				eventHandler = zmem->allocate<MenuEventHandler>();
 				eventHandler->eventType = eventType;
 				eventHandler->eventData.setLocalVarData = zmem->allocate<SetLocalVarData>();
 				eventHandler->eventData.setLocalVarData->localVarName = zmem->duplicate_string(token.string);
-				if (!Expression_Read(/*handle,*/ &eventHandler->eventData.setLocalVarData->expression))
+				if (!Expression_Read(&eventHandler->eventData.setLocalVarData->expression))
 				{
-					PC_SourceError(/*handle,*/ "Could not read expression.");
-					return 0;
+					PC_SourceError("Could not read expression.");
+					return false;
 				}
 				(*eventHandlerSet)->eventHandlers[(*eventHandlerSet)->eventHandlerCount++] = eventHandler;
 				continue;
@@ -5466,38 +5167,38 @@ namespace zonetool::h1
 			else
 			{
 				memset(dst, 0, sizeof(dst));
-				PC_UnreadLastTokenHandle(/*handle*/);
+				PC_UnreadLastTokenHandle();
 
-				if (!PC_ReadTokenHandle(/*handle,*/ &token))
-					return 0;
+				if (!PC_ReadTokenHandle(&token))
+					return false;
 				if (!_stricmp(token.string, ";"))
 				{
 					continue;
 				}
-				PC_UnreadLastTokenHandle(/*handle*/);
+				PC_UnreadLastTokenHandle();
 				do
 				{
-					if (!PC_ReadTokenHandle(/*handle,*/ &token))
-						return 0;
+					if (!PC_ReadTokenHandle(&token))
+						return false;
 					if (!_stricmp(token.string, "if"))
 					{
-						PC_UnreadLastTokenHandle(/*handle*/);
+						PC_UnreadLastTokenHandle();
 						break;
 					}
 					else if (!_stricmp(token.string, "}"))
 					{
-						PC_UnreadLastTokenHandle(/*handle*/);
+						PC_UnreadLastTokenHandle();
 						break;
 					}
 					else if (!_stricmp(token.string, "{"))
 					{
-						PC_SourceError(/*/handle,*/ "Unexpected '{' in an event handler.");
-						return 0;
+						PC_SourceError("Unexpected '{' in an event handler.");
+						return false;
 					}
 					if (strlen(token.string) + strlen(dst) + 1 >= sizeof(dst))
 					{
-						PC_SourceError(/*handle,*/ "action block too long that starts with: %s", dst);
-						return 0;
+						PC_SourceError("action block too long that starts with: %s", dst);
+						return false;
 					}
 					snprintf(dst + strlen(dst), sizeof(dst), "\"%s\" ", token.string);
 				} while (strlen(dst) + 1 < sizeof(dst));
@@ -5511,7 +5212,7 @@ namespace zonetool::h1
 			}
 		}
 
-		return 1;
+		return true;
 	}
 
 	editFieldDef_s* Item_GetEditFieldDef(itemDef_t* item)
@@ -5520,17 +5221,17 @@ namespace zonetool::h1
 
 		switch (item->dataType)
 		{
-		case 0:
-		case 4:
-		case 9:
-		case 10:
-		case 11:
-		case 14:
-		case 16:
-		case 17:
-		case 18:
-		case 22:
-		case 23:
+		case ITEM_TYPE_TEXT:
+		case ITEM_TYPE_EDITFIELD:
+		case ITEM_TYPE_NUMERICFIELD:
+		case ITEM_TYPE_SLIDER:
+		case ITEM_TYPE_YESNO:
+		case ITEM_TYPE_BIND:
+		case ITEM_TYPE_VALIDFILEFIELD:
+		case ITEM_TYPE_DECIMALFIELD:
+		case ITEM_TYPE_UPREDITFIELD:
+		case ITEM_TYPE_EMAILFIELD:
+		case ITEM_TYPE_PASSWORDFIELD:
 			result = item->typeData.editField;
 			break;
 		default:
@@ -5546,7 +5247,7 @@ namespace zonetool::h1
 
 	listBoxDef_s* Item_GetListBoxDef(itemDef_t* item)
 	{
-		if (item->dataType == 6)
+		if (item->dataType == ITEM_TYPE_LISTBOX)
 			return item->typeData.listBox;
 		ZONETOOL_ERROR("Menu Error: Expecting type: ITEM_TYPE_LISTBOX");
 		return 0;
@@ -5554,7 +5255,7 @@ namespace zonetool::h1
 
 	multiDef_s* Item_GetMultiDef(itemDef_t* item)
 	{
-		if (item->dataType == 12)
+		if (item->dataType == ITEM_TYPE_MULTI)
 			return item->typeData.multi;
 		ZONETOOL_ERROR("Menu Error: Expecting type: ITEM_TYPE_MULTI");
 		return 0;
@@ -5562,7 +5263,7 @@ namespace zonetool::h1
 
 	const char* Item_GetEnumDvarName(itemDef_t* item)
 	{
-		if (item->dataType == 13)
+		if (item->dataType == ITEM_TYPE_DVARENUM)
 			return item->typeData.enumDvarName;
 		ZONETOOL_ERROR("Menu Error: Expecting type: ITEM_TYPE_DVARENUM");
 		return 0;
@@ -5570,13 +5271,13 @@ namespace zonetool::h1
 
 	newsTickerDef_s* Item_GetNewsTickerDef(itemDef_t* item)
 	{
-		if (item->dataType == 20)
+		if (item->dataType == ITEM_TYPE_NEWSTICKER)
 			return item->typeData.ticker;
 		ZONETOOL_ERROR("Menu Error: Expecting type: ITEM_TYPE_NEWSTICKER");
 		return 0;
 	}
 
-	void Item_ValidateTypeData(itemDef_t* item/*, int handle*/)
+	void Item_ValidateTypeData(itemDef_t* item)
 	{
 		editFieldDef_s* editDef;
 
@@ -5584,7 +5285,7 @@ namespace zonetool::h1
 		{
 			if (item->dataType != item->type)
 				PC_SourceError(
-					/*handle,*/
+
 					"Attempting to change type from %d to %d.\nMove the type definition higher up in the itemDef.",
 					item->dataType,
 					item->type);
@@ -5594,68 +5295,68 @@ namespace zonetool::h1
 			item->dataType = item->type;
 			switch (item->type)
 			{
-			case 6:
+			case ITEM_TYPE_LISTBOX:
 				item->typeData.listBox = zmem->allocate<listBoxDef_s>();
 				break;
-			case 4:
-			case 9:
-			case 16:
-			case 18:
-			case 11:
-			case 14:
-			case 10:
-			case 0:
-			case 17:
-			case 22:
-			case 23:
+			case ITEM_TYPE_EDITFIELD:
+			case ITEM_TYPE_NUMERICFIELD:
+			case ITEM_TYPE_VALIDFILEFIELD:
+			case ITEM_TYPE_UPREDITFIELD:
+			case ITEM_TYPE_YESNO:
+			case ITEM_TYPE_BIND:
+			case ITEM_TYPE_SLIDER:
+			case ITEM_TYPE_TEXT:
+			case ITEM_TYPE_DECIMALFIELD:
+			case ITEM_TYPE_EMAILFIELD:
+			case ITEM_TYPE_PASSWORDFIELD:
 				item->typeData.editField = zmem->allocate<editFieldDef_s>();
-				if (item->type == 4
-					|| item->type == 16
-					|| item->type == 9
-					|| item->type == 18
-					|| item->type == 17
-					|| item->type == 22
-					|| item->type == 23)
+				if (item->type == ITEM_TYPE_EDITFIELD
+					|| item->type == ITEM_TYPE_VALIDFILEFIELD
+					|| item->type == ITEM_TYPE_NUMERICFIELD
+					|| item->type == ITEM_TYPE_UPREDITFIELD
+					|| item->type == ITEM_TYPE_DECIMALFIELD
+					|| item->type == ITEM_TYPE_EMAILFIELD
+					|| item->type == ITEM_TYPE_PASSWORDFIELD)
 				{
 					editDef = Item_GetEditFieldDef(item);
 					if (!editDef->maxPaintChars)
 						editDef->maxPaintChars = 256;
 				}
 				break;
-			case 12:
+			case ITEM_TYPE_MULTI:
 				item->typeData.multi = zmem->allocate<multiDef_s>();
 				break;
-			case 20:
+			case ITEM_TYPE_NEWSTICKER:
 				item->typeData.ticker = zmem->allocate<newsTickerDef_s>();
 				break;
-			case 21:
+			case ITEM_TYPE_TEXTSCROLL:
 				item->typeData.scroll = zmem->allocate<textScrollDef_s>();
 				break;
 			}
 		}
 	}
 
-	int Item_IsEditFieldDef(itemDef_t* item)
+	bool Item_IsEditFieldDef(itemDef_t* item)
 	{
-		int result;
+		bool result;
 
 		switch (item->dataType)
 		{
-		case 0:
-		case 4:
-		case 9:
-		case 10:
-		case 11:
-		case 14:
-		case 16:
-		case 17:
-		case 18:
-		case 22:
-		case 23:
-			result = 1;
+		case ITEM_TYPE_TEXT:
+		case ITEM_TYPE_EDITFIELD:
+		case ITEM_TYPE_NUMERICFIELD:
+		case ITEM_TYPE_SLIDER:
+		case ITEM_TYPE_YESNO:
+		case ITEM_TYPE_BIND:
+		case ITEM_TYPE_VALIDFILEFIELD:
+		case ITEM_TYPE_DECIMALFIELD:
+		case ITEM_TYPE_UPREDITFIELD:
+		case ITEM_TYPE_EMAILFIELD:
+		case ITEM_TYPE_PASSWORDFIELD:
+			result = true;
 			break;
 		default:
-			result = 0;
+			result = false;
 			break;
 		}
 		return result;
@@ -5686,358 +5387,358 @@ namespace zonetool::h1
 		w->staticFlags = flags;
 	}
 
-	int SetItemStaticFlag(menuDef_t* menu, /*int handle,*/ int flag)
+	bool SetItemStaticFlag(menuDef_t* menu, int flag)
 	{
 		if (!menu)
 			__debugbreak();
 		Window_SetStaticFlags(&menu->window, flag | menu->window.staticFlags);
-		return 1;
+		return true;
 	}
 
-	int MenuParse_name(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_name(menuDef_t* menu)
 	{
-		if (!PC_String_Parse(/*handle,*/ &menu->window.name))
-			return 0;
+		if (!PC_String_Parse(&menu->window.name))
+			return false;
 		_strlwr((char*)menu->window.name);
-		return 1;
+		return true;
 	}
 
-	int MenuParse_fullscreen(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_fullscreen(menuDef_t* menu)
 	{
-		return PC_Int_Parse(/*handle,*/ &menu->data->fullScreen);
+		return PC_Int_Parse(&menu->data->fullScreen);
 	}
 
-	int MenuParse_screenSpace(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_screenSpace(menuDef_t* menu)
 	{
 		SetItemStaticFlag(menu, WINDOWSTATIC_SCREENSPACE);
-		return 1;
+		return true;
 	}
 
-	int MenuParse_decoration(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_decoration(menuDef_t* menu)
 	{
 		SetItemStaticFlag(menu, WINDOWSTATIC_DECORATION);
-		return 1;
+		return true;
 	}
 
-	int MenuParse_rect(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_rect(menuDef_t* menu)
 	{
-		return PC_Rect_Parse(/*handle,*/ &menu->window.rect);
+		return PC_Rect_Parse(&menu->window.rect);
 	}
 
-	int MenuParse_rect720(menuDef_t* menu/*, int handle*/)
-	{
-		// TODO:
-		return 0;
-	}
-
-	int MenuParse_pos(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_rect720(menuDef_t* menu)
 	{
 		// TODO:
-		return 0;
+		return false;
 	}
 
-	int MenuParse_pos720(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_pos(menuDef_t* menu)
 	{
 		// TODO:
-		return 0;
+		return false;
 	}
 
-	int MenuParse_group(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_pos720(menuDef_t* menu)
 	{
-		if (!PC_String_Parse(/*handle,*/ &menu->window.group))
-			return 0;
+		// TODO:
+		return false;
+	}
+
+	bool MenuParse_group(menuDef_t* menu)
+	{
+		if (!PC_String_Parse(&menu->window.group))
+			return false;
 		_strlwr((char*)menu->window.group);
-		return 1;
+		return true;
 	}
 
-	int MenuParse_style(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_style(menuDef_t* menu)
 	{
-		return PC_Int_Parse(/*handle,*/ &menu->window.style);
+		return PC_Int_Parse(&menu->window.style);
 	}
 
-	int MenuParse_visible(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_visible(menuDef_t* menu)
 	{
 		pc_token_s token;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (!_stricmp(token.string, "when") || !_stricmp(token.string, "if"))
 		{
 			Window_AddDynamicFlags(&menu->window, WINDOWDYNAMIC_VISIBLE);
-			return Expression_Read(/*handle,*/ &menu->data->visibleExp);
+			return Expression_Read(&menu->data->visibleExp);
 		}
 		if (atoi(token.string))
 		{
 			Window_AddDynamicFlags(&menu->window, WINDOWDYNAMIC_VISIBLE);
 		}
-		return 1;
+		return true;
 	}
 
-	int MenuParse_onOpen(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_onOpen(menuDef_t* menu)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &menu->data->onOpen);
+		return PC_EventScript_Parse(&menu->data->onOpen);
 	}
 
-	int MenuParse_onClose(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_onClose(menuDef_t* menu)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &menu->data->onClose);
+		return PC_EventScript_Parse(&menu->data->onClose);
 	}
 
-	int MenuParse_onCloseRequest(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_onCloseRequest(menuDef_t* menu)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &menu->data->onCloseRequest);
+		return PC_EventScript_Parse(&menu->data->onCloseRequest);
 	}
 
-	int MenuParse_onESC(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_onESC(menuDef_t* menu)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &menu->data->onESC);
+		return PC_EventScript_Parse(&menu->data->onESC);
 	}
 
-	int MenuParse_border(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_border(menuDef_t* menu)
 	{
-		return PC_Int_Parse(/*handle, */&menu->window.border);
+		return PC_Int_Parse(&menu->window.border);
 	}
 
-	int MenuParse_borderSize(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_borderSize(menuDef_t* menu)
 	{
-		return PC_Float_Parse(/*handle,*/ &menu->window.borderSize);
+		return PC_Float_Parse(&menu->window.borderSize);
 	}
 
-	int MenuParse_backcolor(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_backcolor(menuDef_t* menu)
 	{
-		return PC_Color_Parse(/*handle,*/ &menu->window.backColor);
+		return PC_Color_Parse(&menu->window.backColor);
 	}
 
-	int MenuParse_forecolor(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_forecolor(menuDef_t* menu)
 	{
-		if (!PC_Color_Parse(/*handle,*/ &menu->window.foreColor))
-			return 0;
+		if (!PC_Color_Parse(&menu->window.foreColor))
+			return false;
 		Window_AddDynamicFlags(&menu->window, WINDOWDYNAMIC_FORECOLOR);
-		return 1;
+		return true;
 	}
 
-	int MenuParse_bordercolor(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_bordercolor(menuDef_t* menu)
 	{
-		return PC_Color_Parse(/*handle,*/ &menu->window.borderColor);
+		return PC_Color_Parse(&menu->window.borderColor);
 	}
 
-	int MenuParse_focuscolor(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_focuscolor(menuDef_t* menu)
 	{
-		return PC_Color_Parse(/*handle,*/ &menu->data->focusColor);
+		return PC_Color_Parse(&menu->data->focusColor);
 	}
 
-	int MenuParse_outlinecolor(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_outlinecolor(menuDef_t* menu)
 	{
-		return PC_Color_Parse(/*handle,*/ &menu->window.outlineColor);
+		return PC_Color_Parse(&menu->window.outlineColor);
 	}
 
-	int MenuParse_background(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_background(menuDef_t* menu)
 	{
 		const char* name;
 
-		if (!PC_String_Parse(/*handle,*/ &name))
-			return 0;
+		if (!PC_String_Parse(&name))
+			return false;
 		menu->window.background = zmem->manual_allocate<Material>(sizeof(char*));
 		menu->window.background->name = name;
 		_strlwr((char*)menu->window.background->name);
-		return 1;
+		return true;
 	}
 
-	int MenuParse_ownerDraw(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_ownerDraw(menuDef_t* menu)
 	{
-		return PC_Int_Parse(/*handle, */&menu->window.ownerDraw);
+		return PC_Int_Parse(&menu->window.ownerDraw);
 	}
 
-	int MenuParse_ownerDrawFlags(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_ownerDrawFlags(menuDef_t* menu)
 	{
-		return PC_Int_Parse(/*handle, */&menu->window.ownerDrawFlags);
+		return PC_Int_Parse(&menu->window.ownerDrawFlags);
 	}
 
-	int MenuParse_outOfBounds(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_outOfBounds(menuDef_t* menu)
 	{
 		Window_SetStaticFlags(&menu->window, WINDOWSTATIC_OUTOFBOUNDSCLICK | menu->window.staticFlags);
-		return 1;
+		return true;
 	}
 
-	int MenuParse_soundLoop(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_soundLoop(menuDef_t* menu)
 	{
-		return PC_String_Parse(/*handle,*/ &menu->data->soundName);
+		return PC_String_Parse(&menu->data->soundName);
 	}
 
-	int MenuParse_execExp(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_execExp(menuDef_t* menu)
 	{
 		const char* expressionType;
 		pc_token_s token;
 
-		if (!PC_String_Parse(/*handle,*/ &expressionType))
-			return 0;
+		if (!PC_String_Parse(&expressionType))
+			return false;
 
 		if (!_stricmp(expressionType, "visible"))
 		{
-			if (!PC_ReadTokenHandle(/*handle,*/ &token))
+			if (!PC_ReadTokenHandle(&token))
 			{
-				PC_SourceError(/*handle,*/ "ERROR: line ended early after \"visible\"");
-				return 0;
+				PC_SourceError("ERROR: line ended early after \"visible\"");
+				return false;
 			}
 			if (_stricmp(token.string, "when"))
 			{
-				PC_SourceError(/*handle,*/ "ERROR: Expected 'when' after \"visible\" but found \"%s\"", token.string);
-				return 0;
+				PC_SourceError("ERROR: Expected 'when' after \"visible\" but found \"%s\"", token.string);
+				return false;
 			}
 			Window_AddDynamicFlags(&menu->window, WINDOWDYNAMIC_VISIBLE);
-			if (Expression_Read(/*handle,*/ &menu->data->visibleExp))
-				return 1;
+			if (Expression_Read(&menu->data->visibleExp))
+				return true;
 		}
 		else if (!_stricmp(expressionType, "rect"))
 		{
-			if (!PC_ReadTokenHandle(/*handle,*/ &token))
+			if (!PC_ReadTokenHandle(&token))
 			{
-				PC_SourceError(/*handle,*/ "ERROR: line ended early after \"exp rect\"");
-				return 0;
+				PC_SourceError("ERROR: line ended early after \"exp rect\"");
+				return false;
 			}
 			if (!_stricmp(token.string, "X"))
 			{
-				return (Expression_Read(/*handle,*/ &menu->data->rectXExp)) != 0;
+				return (Expression_Read(&menu->data->rectXExp));
 			}
 			else if (!_stricmp(token.string, "Y"))
 			{
-				return (Expression_Read(/*handle,*/ &menu->data->rectYExp)) != 0;
+				return (Expression_Read(&menu->data->rectYExp));
 			}
 			else if (!_stricmp(token.string, "W"))
 			{
-				return (Expression_Read(/*handle,*/ &menu->data->rectWExp)) != 0;
+				return (Expression_Read(&menu->data->rectWExp));
 			}
 			else if (!_stricmp(token.string, "H"))
 			{
-				return (Expression_Read(/*handle,*/ &menu->data->rectHExp)) != 0;
+				return (Expression_Read(&menu->data->rectHExp));
 			}
-			PC_SourceError(/*handle,*/ "ERROR: Expected 'X', 'Y', 'W' or 'H' after \"exp rect\" but found \"%s\"", token.string);
-			return 0;
+			PC_SourceError("ERROR: Expected 'X', 'Y', 'W' or 'H' after \"exp rect\" but found \"%s\"", token.string);
+			return false;
 		}
 		else if (!_stricmp(expressionType, "openSound"))
 		{
-			if (Expression_Read(/*handle,*/ &menu->data->openSoundExp))
-				return 1;
+			if (Expression_Read(&menu->data->openSoundExp))
+				return true;
 		}
 		else if (!_stricmp(expressionType, "closeSound"))
 		{
-			if (Expression_Read(/*handle,*/ &menu->data->closeSoundExp))
-				return 1;
+			if (Expression_Read(&menu->data->closeSoundExp))
+				return true;
 		}
 		else if (!_stricmp(expressionType, "soundLoop"))
 		{
-			if (Expression_Read(/*handle,*/ &menu->data->soundLoopExp))
-				return 1;
+			if (Expression_Read(&menu->data->soundLoopExp))
+				return true;
 		}
 		else
 		{
-			PC_SourceError(/*handle,*/ "ERROR: Unknown exp type '%s'", token.string);
+			PC_SourceError("ERROR: Unknown exp type '%s'", token.string);
 		}
-		return 0;
+		return false;
 	}
 
-	int MenuParse_popup(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_popup(menuDef_t* menu)
 	{
 		Window_SetStaticFlags(&menu->window, WINDOWSTATIC_POPUP | menu->window.staticFlags);
-		return 1;
+		return true;
 	}
 
-	int MenuParse_fadeClamp(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_fadeClamp(menuDef_t* menu)
 	{
-		return PC_Float_Parse(/*handle,*/ &menu->data->fadeClamp);
+		return PC_Float_Parse(&menu->data->fadeClamp);
 	}
 
-	int MenuParse_fadeCycle(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_fadeCycle(menuDef_t* menu)
 	{
-		return PC_Int_Parse(/*handle,*/ &menu->data->fadeCycle);
+		return PC_Int_Parse(&menu->data->fadeCycle);
 	}
 
-	int MenuParse_fadeAmount(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_fadeAmount(menuDef_t* menu)
 	{
-		return PC_Float_Parse(/*handle,*/ &menu->data->fadeAmount);
+		return PC_Float_Parse(&menu->data->fadeAmount);
 	}
 
-	int MenuParse_fadeInAmount(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_fadeInAmount(menuDef_t* menu)
 	{
-		return PC_Float_Parse(/*handle,*/ &menu->data->fadeInAmount);
+		return PC_Float_Parse(&menu->data->fadeInAmount);
 	}
 
-	int MenuParse_execKey(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_execKey(menuDef_t* menu)
 	{
 		char key;
 		MenuEventHandlerSet* action;
 		ItemKeyHandler* handler;
 
-		if (!PC_Char_Parse(/*handle,*/ &key))
-			return 0;
-		if (!PC_EventScript_Parse(/*handle,*/ &action))
-			return 0;
+		if (!PC_Char_Parse(&key))
+			return false;
+		if (!PC_EventScript_Parse(&action))
+			return false;
 		handler = zmem->allocate<ItemKeyHandler>();
 		handler->key = key;
 		handler->next = menu->data->onKey;
 		handler->action = action;
 		menu->data->onKey = handler;
-		return 1;
+		return true;
 	}
 
-	int MenuParse_execKeyInt(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_execKeyInt(menuDef_t* menu)
 	{
 		int key;
 		MenuEventHandlerSet* action;
 		ItemKeyHandler* handler;
 
-		if (!PC_Int_Parse(/*handle,*/ &key))
-			return 0;
-		if (!PC_EventScript_Parse(/*handle,*/ &action))
-			return 0;
+		if (!PC_Int_Parse(&key))
+			return false;
+		if (!PC_EventScript_Parse(&action))
+			return false;
 		handler = zmem->allocate<ItemKeyHandler>();
 		handler->key = key;
 		handler->next = menu->data->onKey;
 		handler->action = action;
 		menu->data->onKey = handler;
-		return 1;
+		return true;
 	}
 
-	int MenuParse_blurWorld(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_blurWorld(menuDef_t* menu)
 	{
-		if (!PC_Float_Parse(/*handle,*/ &menu->data->blurRadius))
-			return 0;
+		if (!PC_Float_Parse(&menu->data->blurRadius))
+			return false;
 		if (menu->data->blurRadius >= 0.0)
-			return 1;
-		PC_SourceError(/*handle,*/ "blur must be >= 0; %g is invalid", menu->data->blurRadius);
-		return 0;
+			return true;
+		PC_SourceError("blur must be >= 0; %g is invalid", menu->data->blurRadius);
+		return false;
 	}
 
-	int MenuParse_legacySplitScreenScale(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_legacySplitScreenScale(menuDef_t* menu)
 	{
-		return SetItemStaticFlag(menu, /*handle,*/ WINDOWSTATIC_LEGACYSPLITSCREENSCALE);
+		return SetItemStaticFlag(menu, WINDOWSTATIC_LEGACYSPLITSCREENSCALE);
 	}
 
-	int MenuParse_hiddenDuringScope(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_hiddenDuringScope(menuDef_t* menu)
 	{
-		return SetItemStaticFlag(menu, /*handle,*/ WINDOWSTATIC_HIDDENDURINGSCOPE);
+		return SetItemStaticFlag(menu, WINDOWSTATIC_HIDDENDURINGSCOPE);
 	}
 
-	int MenuParse_hiddenDuringFlashbang(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_hiddenDuringFlashbang(menuDef_t* menu)
 	{
-		return SetItemStaticFlag(menu, /*handle,*/ WINDOWSTATIC_HIDDENDURINGFLASH);
+		return SetItemStaticFlag(menu, WINDOWSTATIC_HIDDENDURINGFLASH);
 	}
 
-	int MenuParse_hiddenDuringUI(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_hiddenDuringUI(menuDef_t* menu)
 	{
-		return SetItemStaticFlag(menu, /*handle,*/ WINDOWSTATIC_HIDDENDURINGUI);
+		return SetItemStaticFlag(menu, WINDOWSTATIC_HIDDENDURINGUI);
 	}
 
-	int MenuParse_allowedBinding(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_allowedBinding(menuDef_t* menu)
 	{
 		if (menu->data->allowedBinding)
-			PC_SourceError(/*handle,*/ "Only one 'allowedBinding' is supported");
-		return PC_String_Parse(/*handle,*/ &menu->data->allowedBinding);
+			PC_SourceError("Only one 'allowedBinding' is supported");
+		return PC_String_Parse(&menu->data->allowedBinding);
 	}
 
-	int MenuParse_textOnlyFocus(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_textOnlyFocus(menuDef_t* menu)
 	{
-		return SetItemStaticFlag(menu, /*handle,*/ WINDOWSTATIC_TEXTONLYFOCUS);
+		return SetItemStaticFlag(menu, WINDOWSTATIC_TEXTONLYFOCUS);
 	}
 
 	void Window_Init(windowDef_t* window)
@@ -6054,7 +5755,7 @@ namespace zonetool::h1
 	{
 		listBoxDef_s* listPtr;
 
-		if (item && item->type == 6)
+		if (item && item->type == ITEM_TYPE_LISTBOX)
 		{
 			item->cursorPos[0] = 0;
 			listPtr = Item_GetListBoxDef(item);
@@ -6073,25 +5774,25 @@ namespace zonetool::h1
 		if (textAlignMode >= 0 && textAlignMode <= 15)
 			result = (textAlignMode & 3) != 3;
 		else
-			result = 0;
+			result = false;
 		return result;
 	}
 
-	int ItemParse_name(itemDef_t* item/*, int handle*/)
+	bool ItemParse_name(itemDef_t* item)
 	{
-		return PC_String_Parse(/*handle,*/ &item->window.name);
+		return PC_String_Parse(&item->window.name);
 	}
 
-	int ItemParse_text(itemDef_t* item/*, int handle*/)
+	bool ItemParse_text(itemDef_t* item)
 	{
-		return PC_String_Parse(/*handle,*/ &item->text);
+		return PC_String_Parse(&item->text);
 	}
 
 	char* UI_FileText(const char* fileName)
 	{
 		char* result;
-		char buffer[0x1000];
-		unsigned int len;
+		static char buffer[0x1000];
+		std::size_t len;
 		FILE* fp;
 
 		memset(buffer, 0, sizeof(buffer));
@@ -6118,170 +5819,169 @@ namespace zonetool::h1
 		return result;
 	}
 
-	int ItemParse_textfile(itemDef_t* item/*, int handle*/)
+	bool ItemParse_textfile(itemDef_t* item)
 	{
 		const char* text;
 		pc_token_s token;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		text = UI_FileText(token.string);
 		if (!text)
-			return 0;
+			return false;
 		item->text = zmem->duplicate_string(text);
-		return 1;
+		return true;
 	}
 
-	int ItemParse_textsavegame(itemDef_t* item/*, int handle*/)
+	bool ItemParse_textsavegame(itemDef_t* item)
 	{
 		item->text = "savegameinfo";
 		item->itemFlags |= 1u;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_textcinematicsubtitle(itemDef_t* item/*, int handle*/)
+	bool ItemParse_textcinematicsubtitle(itemDef_t* item)
 	{
 		item->text = "cinematicsubtitle";
 		item->itemFlags |= 2u;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_group(itemDef_t* item/*, int handle*/)
+	bool ItemParse_group(itemDef_t* item)
 	{
-		return PC_String_Parse(/*handle,*/ &item->window.group);
+		return PC_String_Parse(&item->window.group);
 	}
 
-	int ItemParse_rect(itemDef_t* item/*, int handle*/)
+	bool ItemParse_rect(itemDef_t* item)
 	{
-		return PC_Rect_Parse(/*handle,*/ &item->window.rectClient);
+		return PC_Rect_Parse(&item->window.rectClient);
 	}
 
-	int ItemParse_rect720(itemDef_t* item/*, int handle*/)
-	{
-		// TODO:
-		return 0;
-	}
-
-	int ItemParse_pos(itemDef_t* item/*, int handle*/)
+	bool ItemParse_rect720(itemDef_t* item)
 	{
 		// TODO:
-		return 0;
+		return false;
 	}
 
-	int ItemParse_pos720(itemDef_t* item/*, int handle*/)
+	bool ItemParse_pos(itemDef_t* item)
 	{
 		// TODO:
-		return 0;
+		return false;
 	}
 
-	int ItemParse_origin(itemDef_t* item/*, int handle*/)
+	bool ItemParse_pos720(itemDef_t* item)
+	{
+		// TODO:
+		return false;
+	}
+
+	bool ItemParse_origin(itemDef_t* item)
 	{
 		float x;
 		float y;
 
-		if (!PC_Float_Parse(/*handle,*/ &x) || !PC_Float_Parse(/*handle,*/ &y))
-			return 0;
+		if (!PC_Float_Parse(&x) || !PC_Float_Parse(&y))
+			return false;
 		item->window.rectClient.x += x;
 		item->window.rectClient.y += y;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_style(itemDef_t* item/*, int handle*/)
+	bool ItemParse_style(itemDef_t* item)
 	{
-		return PC_Int_Parse(/*handle,*/ &item->window.style);
+		return PC_Int_Parse(&item->window.style);
 	}
 
-	int ItemParse_decoration(itemDef_t* item/*, int handle*/)
+	bool ItemParse_decoration(itemDef_t* item)
 	{
 		Window_SetStaticFlags(&item->window, item->window.staticFlags | WINDOWSTATIC_DECORATION);
-		return 1;
+		return true;
 	}
 
-	int ItemParse_notselectable(itemDef_t* item/*, int handle*/)
+	bool ItemParse_notselectable(itemDef_t* item)
 	{
 		listBoxDef_s* listPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		listPtr = Item_GetListBoxDef(item);
 		if (!listPtr)
-			return 0;
-		if (item->type == 6)
+			return false;
+		if (item->type == ITEM_TYPE_LISTBOX)
 			listPtr->notselectable = 1;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_usePaging(itemDef_t* item/*, int handle*/)
+	bool ItemParse_usePaging(itemDef_t* item)
 	{
 		listBoxDef_s* listPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		listPtr = Item_GetListBoxDef(item);
 		if (!listPtr)
-			return 0;
-		if (item->type == 6)
+			return false;
+		if (item->type == ITEM_TYPE_LISTBOX)
 			listPtr->usePaging = 1;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_autowrapped(itemDef_t* item/*, int handle*/)
+	bool ItemParse_autowrapped(itemDef_t* item)
 	{
 		Window_SetStaticFlags(&item->window, item->window.staticFlags | WINDOWSTATIC_AUTOWRAPPED);
-		return 1;
+		return true;
 	}
 
-	int ItemParse_horizontalscroll(itemDef_t* item/*, int handle*/)
+	bool ItemParse_horizontalscroll(itemDef_t* item)
 	{
 		Window_SetStaticFlags(&item->window, item->window.staticFlags | WINDOWSTATIC_HORIZONTALSCROLL);
-		return 1;
+		return true;
 	}
 
-	int ItemParse_type(itemDef_t* item/*, int handle*/)
+	bool ItemParse_type(itemDef_t* item)
 	{
-		if (!PC_Int_Parse(/*handle,*/ &item->type))
-			return 0;
-		Item_ValidateTypeData(item/*, handle*/);
-		return 1;
+		if (!PC_Int_Parse(&item->type))
+			return false;
+		Item_ValidateTypeData(item);
+		return true;
 	}
 
-	int ItemParse_elementwidth(itemDef_t* item/*, int handle*/)
+	bool ItemParse_elementwidth(itemDef_t* item)
 	{
 		listBoxDef_s* listPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		listPtr = Item_GetListBoxDef(item);
 		if (listPtr)
-			return PC_Float_Parse(/*handle,*/ &listPtr->elementWidth) != 0;
-		return 0;
+			return PC_Float_Parse(&listPtr->elementWidth);
+		return false;
 	}
 
-	int ItemParse_elementheight(itemDef_t* item/*, int handle*/)
+	bool ItemParse_elementheight(itemDef_t* item)
 	{
 		listBoxDef_s* listPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		listPtr = Item_GetListBoxDef(item);
 		if (listPtr)
-			return PC_Float_Parse(/*handle,*/ &listPtr->elementHeight) != 0;
-		return 0;
+			return PC_Float_Parse(&listPtr->elementHeight);
+		return false;
 	}
 
-	int ItemParse_special(itemDef_t* item/*, int handle*/)
+	bool ItemParse_special(itemDef_t* item)
 	{
-		return PC_Float_Parse(/*handle,*/ &item->special) != 0;
+		return PC_Float_Parse(&item->special);
 	}
 
-	int ItemParse_elementtype(itemDef_t* item/*, int handle*/)
+	bool ItemParse_elementtype(itemDef_t* item)
 	{
-		int result;
 		listBoxDef_s* listPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		if (item->typeData.data && (listPtr = Item_GetListBoxDef(item)) != 0)
-			return PC_Int_Parse(/*handle,*/ &listPtr->elementStyle) != 0;
-		return 0;
+			return PC_Int_Parse(&listPtr->elementStyle);
+		return false;
 	}
 
-	int ItemParse_columns(itemDef_t* item/*, int handle*/)
+	bool ItemParse_columns(itemDef_t* item)
 	{
 		int pos;
 		int width;
@@ -6291,210 +5991,210 @@ namespace zonetool::h1
 		int num;
 		int i;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		if (!item->typeData.listBox)
-			return 0;
+			return false;
 		listPtr = Item_GetListBoxDef(item);
 		if (!listPtr)
-			return 0;
-		if (!PC_Int_Parse(/*handle,*/ &num))
-			return 0;
+			return false;
+		if (!PC_Int_Parse(&num))
+			return false;
 		if (num > 16)
 			num = 16;
 		listPtr->numColumns = num;
 		for (i = 0; i < num; ++i)
 		{
-			if (!PC_Int_Parse(/*handle,*/ &pos) || !PC_Int_Parse(/*handle,*/ &width) || !PC_Int_Parse(/*handle,*/ &maxChars))
-				return 0;
+			if (!PC_Int_Parse(&pos) || !PC_Int_Parse(&width) || !PC_Int_Parse(&maxChars))
+				return false;
 			listPtr->columnInfo[i].xpos = pos;
 			listPtr->columnInfo[i].width = width;
-			listPtr->columnInfo[i].height = listPtr->elementHeight;
+			listPtr->columnInfo[i].height = (int)listPtr->elementHeight;
 			listPtr->columnInfo[i].maxChars = maxChars;
-			if (PC_Int_ParseLine(/*handle,*/ &align))
+			if (PC_Int_ParseLine(&align))
 				listPtr->columnInfo[i].alignment = align;
 			else
 				listPtr->columnInfo[i].alignment = 0;
 		}
-		return 1;
+		return true;
 	}
 
-	int ItemParse_border(itemDef_t* item/*, int handle*/)
+	bool ItemParse_border(itemDef_t* item)
 	{
-		return PC_Int_Parse(/*handle,*/ &item->window.border) != 0;
+		return PC_Int_Parse(&item->window.border);
 	}
 
-	int ItemParse_bordersize(itemDef_t* item/*, int handle*/)
+	bool ItemParse_bordersize(itemDef_t* item)
 	{
-		return PC_Float_Parse(/*handle,*/ &item->window.borderSize) != 0;
+		return PC_Float_Parse(&item->window.borderSize);
 	}
 
-	int ItemParse_visible(itemDef_t* item/*, int handle*/)
+	bool ItemParse_visible(itemDef_t* item)
 	{
 		pc_token_s token;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (!_stricmp(token.string, "when") || !_stricmp(token.string, "if"))
 		{
 			Window_AddDynamicFlags(&item->window, WINDOWDYNAMIC_VISIBLE);
-			return Expression_Read(/*handle,*/ &item->visibleExp);
+			return Expression_Read(&item->visibleExp);
 		}
 		if (atoi(token.string))
 		{
 			Window_AddDynamicFlags(&item->window, WINDOWDYNAMIC_VISIBLE);
 		}
-		return 1;
+		return true;
 	}
 
-	int ItemParse_disabled(itemDef_t* item/*, int handle*/)
+	bool ItemParse_disabled(itemDef_t* item)
 	{
 		pc_token_s token;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (!_stricmp(token.string, "when") || !_stricmp(token.string, "if"))
 		{
-			if (Expression_Read(/*handle,*/ &item->disabledExp))
-				return 1;
+			if (Expression_Read(&item->disabledExp))
+				return true;
 		}
-		return 0;
+		return false;
 	}
 
-	int ItemParse_ownerdraw(itemDef_t* item/*, int handle*/)
+	bool ItemParse_ownerdraw(itemDef_t* item)
 	{
-		int result;
+		bool result;
 
-		result = PC_Int_Parse(/*handle,*/ &item->window.ownerDraw);
+		result = PC_Int_Parse(&item->window.ownerDraw);
 		if (result)
 		{
 			item->type = 8;
-			result = 1;
+			result = true;
 		}
 		return result;
 	}
 
-	int ItemParse_align(itemDef_t* item/*, int handle*/)
+	bool ItemParse_align(itemDef_t* item)
 	{
-		return PC_Int_Parse(/*handle,*/ &item->alignment) != 0;
+		return PC_Int_Parse(&item->alignment);
 	}
 
-	int ItemParse_textalign(itemDef_t* item/*, int handle*/)
+	bool ItemParse_textalign(itemDef_t* item)
 	{
-		if (!PC_Int_Parse(/*handle,*/ &item->textAlignMode))
-			return 0;
+		if (!PC_Int_Parse(&item->textAlignMode))
+			return false;
 		if (ItemParse_IsValidTextAlignment(item->textAlignMode))
-			return 1;
-		PC_SourceError(/*handle,*/ "expected ITEM_ALIGN_* value");
-		return 0;
+			return true;
+		PC_SourceError("expected ITEM_ALIGN_* value");
+		return false;
 	}
 
-	int ItemParse_textalignx(itemDef_t* item/*, int handle*/)
+	bool ItemParse_textalignx(itemDef_t* item)
 	{
-		return PC_Float_Parse(/*handle,*/ &item->textalignx) != 0;
+		return PC_Float_Parse(&item->textalignx);
 	}
 
-	int ItemParse_textaligny(itemDef_t* item/*, int handle*/)
+	bool ItemParse_textaligny(itemDef_t* item)
 	{
-		return PC_Float_Parse(/*handle,*/ &item->textaligny) != 0;
+		return PC_Float_Parse(&item->textaligny);
 	}
 
-	int ItemParse_textscale(itemDef_t* item/*, int handle*/)
+	bool ItemParse_textscale(itemDef_t* item)
 	{
-		return PC_Float_Parse(/*handle,*/ &item->textscale) != 0;
+		return PC_Float_Parse(&item->textscale);
 	}
 
-	int ItemParse_textstyle(itemDef_t* item/*, int handle*/)
+	bool ItemParse_textstyle(itemDef_t* item)
 	{
-		return PC_Int_Parse(/*handle,*/ &item->textStyle) != 0;
+		return PC_Int_Parse(&item->textStyle);
 	}
 
-	int ItemParse_textfont(itemDef_t* item/*, int handle*/)
+	bool ItemParse_textfont(itemDef_t* item)
 	{
-		return PC_Int_Parse(/*handle,*/ &item->fontEnum) != 0;
+		return PC_Int_Parse(&item->fontEnum);
 	}
 
-	int ItemParse_backcolor(itemDef_t* item/*, int handle*/)
+	bool ItemParse_backcolor(itemDef_t* item)
 	{
-		return PC_Color_Parse(/*handle,*/ &item->window.backColor);
+		return PC_Color_Parse(&item->window.backColor);
 	}
 
-	int ItemParse_forecolor(itemDef_t* item/*, int handle*/)
+	bool ItemParse_forecolor(itemDef_t* item)
 	{
-		if (!PC_Color_Parse(/*handle,*/ &item->window.foreColor))
-			return 0;
+		if (!PC_Color_Parse(&item->window.foreColor))
+			return false;
 		Window_AddDynamicFlags(&item->window, WINDOWDYNAMIC_FORECOLOR);
-		return 1;
+		return true;
 	}
 
-	int ItemParse_bordercolor(itemDef_t* item/*, int handle*/)
+	bool ItemParse_bordercolor(itemDef_t* item)
 	{
-		return PC_Color_Parse(/*handle,*/ &item->window.borderColor);
+		return PC_Color_Parse(&item->window.borderColor);
 	}
 
-	int ItemParse_outlinecolor(itemDef_t* item/*, int handle*/)
+	bool ItemParse_outlinecolor(itemDef_t* item)
 	{
-		return PC_Color_Parse(/*handle,*/ &item->window.outlineColor);
+		return PC_Color_Parse(&item->window.outlineColor);
 	}
 
-	int ItemParse_background(itemDef_t* item/*, int handle*/)
+	bool ItemParse_background(itemDef_t* item)
 	{
 		const char* name;
 
-		if (!PC_String_Parse(/*handle,*/ &name))
-			return 0;
+		if (!PC_String_Parse(&name))
+			return false;
 		item->window.background = zmem->manual_allocate<Material>(sizeof(char*));
 		item->window.background->name = name;
 		_strlwr((char*)item->window.background->name);
-		return 1;
+		return true;
 	}
 
-	int ItemParse_onFocus(itemDef_t* item/*, int handle*/)
+	bool ItemParse_onFocus(itemDef_t* item)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &item->onFocus);
+		return PC_EventScript_Parse(&item->onFocus);
 	}
 
-	int ItemParse_leaveFocus(itemDef_t* item/*, int handle*/)
+	bool ItemParse_leaveFocus(itemDef_t* item)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &item->leaveFocus);
+		return PC_EventScript_Parse(&item->leaveFocus);
 	}
 
-	int ItemParse_mouseEnter(itemDef_t* item/*, int handle*/)
+	bool ItemParse_mouseEnter(itemDef_t* item)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &item->mouseEnter);
+		return PC_EventScript_Parse(&item->mouseEnter);
 	}
 
-	int ItemParse_mouseExit(itemDef_t* item/*, int handle*/)
+	bool ItemParse_mouseExit(itemDef_t* item)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &item->mouseExit);
+		return PC_EventScript_Parse(&item->mouseExit);
 	}
 
-	int ItemParse_mouseEnterText(itemDef_t* item/*, int handle*/)
+	bool ItemParse_mouseEnterText(itemDef_t* item)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &item->mouseEnterText);
+		return PC_EventScript_Parse(&item->mouseEnterText);
 	}
 
-	int ItemParse_mouseExitText(itemDef_t* item/*, int handle*/)
+	bool ItemParse_mouseExitText(itemDef_t* item)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &item->mouseExitText);
+		return PC_EventScript_Parse(&item->mouseExitText);
 	}
 
-	int ItemParse_action(itemDef_t* item/*, int handle*/)
+	bool ItemParse_action(itemDef_t* item)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &item->action);
+		return PC_EventScript_Parse(&item->action);
 	}
 
-	int ItemParse_accept(itemDef_t* item/*, int handle*/)
+	bool ItemParse_accept(itemDef_t* item)
 	{
-		return PC_EventScript_Parse(/*handle,*/ &item->accept);
+		return PC_EventScript_Parse(&item->accept);
 	}
 
-	int ItemParse_dvar(itemDef_t* item/*, int handle*/)
+	bool ItemParse_dvar(itemDef_t* item)
 	{
 		editFieldDef_s* editPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
-		if (!PC_String_Parse(/*handle,*/ &item->dvar))
-			return 0;
+		Item_ValidateTypeData(item);
+		if (!PC_String_Parse(&item->dvar))
+			return false;
 
 		if (item->typeData.editField && Item_IsEditFieldDef(item))
 		{
@@ -6505,16 +6205,16 @@ namespace zonetool::h1
 			editPtr->stepVal = -1.0f;
 		}
 
-		return 1;
+		return true;
 	}
 
-	int ItemParse_localvar(itemDef_t* item/*, int handle*/)
+	bool ItemParse_localvar(itemDef_t* item)
 	{
 		editFieldDef_s* editPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
-		if (!PC_String_Parse(/*handle,*/ &item->localVar))
-			return 0;
+		Item_ValidateTypeData(item);
+		if (!PC_String_Parse(&item->localVar))
+			return false;
 
 		if (item->typeData.editField && Item_IsEditFieldDef(item))
 		{
@@ -6525,102 +6225,102 @@ namespace zonetool::h1
 			editPtr->stepVal = -1.0f;
 		}
 
-		return 1;
+		return true;
 	}
 
-	int ItemParse_maxChars(itemDef_t* item/*, int handle*/)
+	bool ItemParse_maxChars(itemDef_t* item)
 	{
 		editFieldDef_s* editPtr;
 		int maxChars;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		if (!item->typeData.editField)
-			return 0;
-		if (!PC_Int_Parse(/*handle,*/ &maxChars))
-			return 0;
+			return false;
+		if (!PC_Int_Parse(&maxChars))
+			return false;
 		editPtr = Item_GetEditFieldDef(item);
 		if (!editPtr)
-			return 0;
+			return false;
 		editPtr->maxChars = maxChars;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_maxCharsGotoNext(itemDef_t* item/*, int handle*/)
+	bool ItemParse_maxCharsGotoNext(itemDef_t* item)
 	{
 		editFieldDef_s* editPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		if (!item->typeData.editField)
-			return 0;
+			return false;
 		editPtr = Item_GetEditFieldDef(item);
 		if (!editPtr)
-			return 0;
+			return false;
 		editPtr->maxCharsGotoNext = 1;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_maxPaintChars(itemDef_t* item/*, int handle*/)
+	bool ItemParse_maxPaintChars(itemDef_t* item)
 	{
 		editFieldDef_s* editPtr;
 		int maxChars;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		if (!item->typeData.editField)
-			return 0;
-		if (!PC_Int_Parse(/*handle,*/ &maxChars))
-			return 0;
+			return false;
+		if (!PC_Int_Parse(&maxChars))
+			return false;
 		editPtr = Item_GetEditFieldDef(item);
 		if (!editPtr)
-			return 0;
+			return false;
 		editPtr->maxPaintChars = maxChars;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_focusSound(itemDef_t* item/*, int handle*/)
+	bool ItemParse_focusSound(itemDef_t* item)
 	{
 		const char* name;
 
-		if (!PC_String_Parse(/*handle,*/ &name))
-			return 0;
+		if (!PC_String_Parse(&name))
+			return false;
 		item->focusSound = zmem->manual_allocate<snd_alias_list_t>(sizeof(char*));
 		item->focusSound->name = name;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_dvarFloat(itemDef_t* item/*, int handle*/)
+	bool ItemParse_dvarFloat(itemDef_t* item)
 	{
 		editFieldDef_s* editPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		if (!item->typeData.editField)
-			return 0;
+			return false;
 		editPtr = Item_GetEditFieldDef(item);
 		if (!editPtr)
-			return 0;
-		return PC_String_Parse(/*handle,*/ &item->dvar)
-			&& PC_Float_Parse(/*handle,*/ &editPtr->stepVal)
-			&& PC_Float_Parse(/*handle,*/ &editPtr->minVal)
-			&& PC_Float_Parse(/*handle,*/ &editPtr->maxVal);
+			return false;
+		return PC_String_Parse(&item->dvar)
+			&& PC_Float_Parse(&editPtr->stepVal)
+			&& PC_Float_Parse(&editPtr->minVal)
+			&& PC_Float_Parse(&editPtr->maxVal);
 	}
 
-	int ItemParse_dvarStrList(itemDef_t* item/*, int handle*/)
+	bool ItemParse_dvarStrList(itemDef_t* item)
 	{
 		int pass;
 		multiDef_s* multiPtr;
 		pc_token_s token;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		if (!item->typeData.multi)
-			return 0;
-		if (item->type != 12)
-			return 0;
+			return false;
+		if (item->type != ITEM_TYPE_MULTI)
+			return false;
 		multiPtr = Item_GetMultiDef(item);
 		multiPtr->count = 0;
 		multiPtr->strDef = 1;
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (token.string[0] != '{')
-			return 0;
+			return false;
 		pass = 0;
 		do
 		{
@@ -6628,13 +6328,13 @@ namespace zonetool::h1
 			{
 				do
 				{
-					if (!PC_ReadTokenHandle(/*handle,*/ &token))
+					if (!PC_ReadTokenHandle(&token))
 					{
-						PC_SourceError(/*handle,*/ "end of file inside menu item");
-						return 0;
+						PC_SourceError("end of file inside menu item");
+						return false;
 					}
 					if (token.string[0] == '}')
-						return 1;
+						return true;
 				} while (token.string[0] == ',' || token.string[0] == ';');
 				if (pass)
 					break;
@@ -6645,165 +6345,165 @@ namespace zonetool::h1
 			pass = 0;
 			++multiPtr->count;
 		} while (multiPtr->count < 32);
-		return 0;
+		return false;
 	}
 
-	int ItemParse_dvarFloatList(itemDef_t* item/*, int handle*/)
+	bool ItemParse_dvarFloatList(itemDef_t* item)
 	{
 		multiDef_s* multiPtr;
 		pc_token_s token;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		if (!item->typeData.multi)
-			return 0;
-		if (item->type != 12)
-			return 0;
+			return false;
+		if (item->type != ITEM_TYPE_MULTI)
+			return false;
 		multiPtr = Item_GetMultiDef(item);
 		multiPtr->count = 0;
 		multiPtr->strDef = 0;
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (token.string[0] != '{')
-			return 0;
+			return false;
 		do
 		{
 			do
 			{
-				if (!PC_ReadTokenHandle(/*handle,*/ &token))
+				if (!PC_ReadTokenHandle(&token))
 				{
-					PC_SourceError(/*handle,*/ "end of file inside menu item");
-					return 0;
+					PC_SourceError("end of file inside menu item");
+					return false;
 				}
 				if (token.string[0] == '}')
-					return 1;
+					return true;
 			} while (token.string[0] == ',' || token.string[0] == ';');
 			multiPtr->dvarList[multiPtr->count] = zmem->duplicate_string(token.string);
-			if (!PC_Float_Parse(/*handle,*/ &multiPtr->dvarValue[multiPtr->count]))
-				return 0;
+			if (!PC_Float_Parse(&multiPtr->dvarValue[multiPtr->count]))
+				return false;
 			++multiPtr->count;
 		} while (multiPtr->count < 32);
-		return 0;
+		return false;
 	}
 
-	int ItemParse_dvarEnumList(itemDef_t* item/*, int handle*/)
+	bool ItemParse_dvarEnumList(itemDef_t* item)
 	{
 		const char* enumDvarPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		enumDvarPtr = Item_GetEnumDvarName(item);
-		if (item->type != 13)
-			return 0;
+		if (item->type != ITEM_TYPE_DVARENUM)
+			return false;
 		if (!enumDvarPtr)
-			return PC_String_Parse(/*handle,*/ &enumDvarPtr);
-		PC_SourceError(/*handle,*/ "enumDvarList already given");
-		return 0;
+			return PC_String_Parse(&item->typeData.enumDvarName);
+		PC_SourceError("enumDvarList already given");
+		return false;
 	}
 
-	int ItemParse_ownerdrawFlag(itemDef_t* item/*, int handle*/)
+	bool ItemParse_ownerdrawFlag(itemDef_t* item)
 	{
 		int flags;
 
-		if (!PC_Int_Parse(/*handle,*/ &flags))
-			return 0;
+		if (!PC_Int_Parse(&flags))
+			return false;
 		item->window.ownerDrawFlags |= flags;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_enableDvar(itemDef_t* item/*, int handle*/)
+	bool ItemParse_enableDvar(itemDef_t* item)
 	{
-		if (!PC_Script_Parse(/*handle,*/ &item->enableDvar))
-			return 0;
+		if (!PC_Script_Parse(&item->enableDvar))
+			return false;
 		item->dvarFlags |= 1u;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_dvarTest(itemDef_t* item/*, int handle*/)
+	bool ItemParse_dvarTest(itemDef_t* item)
 	{
-		return PC_String_Parse(/*handle,*/ &item->dvarTest) != 0;
+		return PC_String_Parse(&item->dvarTest);
 	}
 
-	int ItemParse_disableDvar(itemDef_t* item/*, int handle*/)
+	bool ItemParse_disableDvar(itemDef_t* item)
 	{
-		if (!PC_Script_Parse(/*handle,*/ &item->enableDvar))
-			return 0;
+		if (!PC_Script_Parse(&item->enableDvar))
+			return false;
 		item->dvarFlags |= 2u;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_showDvar(itemDef_t* item/*, int handle*/)
+	bool ItemParse_showDvar(itemDef_t* item)
 	{
-		if (!PC_Script_Parse(/*handle,*/ &item->enableDvar))
-			return 0;
+		if (!PC_Script_Parse(&item->enableDvar))
+			return false;
 		item->dvarFlags |= 4u;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_hideDvar(itemDef_t* item/*, int handle*/)
+	bool ItemParse_hideDvar(itemDef_t* item)
 	{
-		if (!PC_Script_Parse(/*handle,*/ &item->enableDvar))
-			return 0;
+		if (!PC_Script_Parse(&item->enableDvar))
+			return false;
 		item->dvarFlags |= 8u;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_focusDvar(itemDef_t* item/*, int handle*/)
+	bool ItemParse_focusDvar(itemDef_t* item)
 	{
-		if (!PC_Script_Parse(/*handle,*/ &item->enableDvar))
-			return 0;
+		if (!PC_Script_Parse(&item->enableDvar))
+			return false;
 		item->dvarFlags |= 0x10u;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_doubleClick(itemDef_t* item/*, int handle*/)
+	bool ItemParse_doubleClick(itemDef_t* item)
 	{
 		listBoxDef_s* listPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		if (!item->typeData.listBox)
-			return 0;
+			return false;
 		listPtr = Item_GetListBoxDef(item);
 		if (!listPtr)
-			return 0;
-		return PC_EventScript_Parse(/*handle,*/ &listPtr->onDoubleClick);
+			return false;
+		return PC_EventScript_Parse(&listPtr->onDoubleClick);
 	}
 
-	int ItemParse_execKey(itemDef_t* item/*, int handle*/)
+	bool ItemParse_execKey(itemDef_t* item)
 	{
 		char key;
 		MenuEventHandlerSet* action;
 		ItemKeyHandler* handler;
 
-		if (!PC_Char_Parse(/*handle,*/ &key))
-			return 0;
-		if (!PC_EventScript_Parse(/*handle,*/ &action))
-			return 0;
+		if (!PC_Char_Parse(&key))
+			return false;
+		if (!PC_EventScript_Parse(&action))
+			return false;
 		handler = zmem->allocate<ItemKeyHandler>();
 		handler->key = key;
 		handler->next = item->onKey;
 		handler->action = action;
 		item->onKey = handler;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_execKeyInt(itemDef_t* item/*, int handle*/)
+	bool ItemParse_execKeyInt(itemDef_t* item)
 	{
 		int key;
 		MenuEventHandlerSet* action;
 		ItemKeyHandler* handler;
 
-		if (!PC_Int_Parse(/*handle,*/ &key))
-			return 0;
-		if (!PC_EventScript_Parse(/*handle,*/ &action))
-			return 0;
+		if (!PC_Int_Parse(&key))
+			return false;
+		if (!PC_EventScript_Parse(&action))
+			return false;
 		handler = zmem->allocate<ItemKeyHandler>();
 		handler->key = key;
 		handler->next = item->onKey;
 		handler->action = action;
 		item->onKey = handler;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_execExp(itemDef_t* item/*, int handle*/)
+	bool ItemParse_execExp(itemDef_t* item)
 	{
 		const char* expressionType;
 		const char* expressionComponent;
@@ -6811,63 +6511,63 @@ namespace zonetool::h1
 
 		target = ITEM_FLOATEXP_TGT__COUNT;
 
-		if (!PC_String_Parse(/*handle,*/ &expressionType))
-			return 0;
+		if (!PC_String_Parse(&expressionType))
+			return false;
 
 		if (!_stricmp(expressionType, "visible"))
 		{
 			if (item->visibleExp)
 			{
-				PC_SourceError(/*handle,*/ "redefinition of expression for '%s'.", expressionType);
-				return 0;
+				PC_SourceError("redefinition of expression for '%s'.", expressionType);
+				return false;
 			}
 			else
 			{
 				Window_AddDynamicFlags(&item->window, WINDOWDYNAMIC_VISIBLE);
-				return Expression_Read(/**handle,*/ &item->visibleExp);
+				return Expression_Read(&item->visibleExp);
 			}
 		}
 		else if (!_stricmp(expressionType, "text"))
 		{
 			if (item->textExp)
 			{
-				PC_SourceError(/*handle,*/ "redefinition of expression for '%s'.", expressionType);
-				return 0;
+				PC_SourceError("redefinition of expression for '%s'.", expressionType);
+				return false;
 			}
 			else
 			{
-				return Expression_Read(/*handle,*/ &item->textExp);
+				return Expression_Read(&item->textExp);
 			}
 		}
 		else if (!_stricmp(expressionType, "material"))
 		{
 			if (item->materialExp)
 			{
-				PC_SourceError(/*handle,*/ "redefinition of expression for '%s'.", expressionType);
-				return 0;
+				PC_SourceError("redefinition of expression for '%s'.", expressionType);
+				return false;
 			}
 			else
 			{
-				return Expression_Read(/*handle,*/ &item->materialExp);
+				return Expression_Read(&item->materialExp);
 			}
 		}
 		else if (!_stricmp(expressionType, "disabled"))
 		{
 			if (item->disabledExp)
 			{
-				PC_SourceError(/*handle,*/ "redefinition of expression for '%s'.", expressionType);
-				return 0;
+				PC_SourceError("redefinition of expression for '%s'.", expressionType);
+				return false;
 			}
 			else
 			{
-				return Expression_Read(/*handle,*/ &item->disabledExp);
+				return Expression_Read(&item->disabledExp);
 			}
 		}
 		if (!PC_String_Parse(&expressionComponent))
 		{
-			PC_SourceError(/*handle,*/ "component required (exp type '%s' is not a known single-component expression slot)",
+			PC_SourceError("component required (exp type '%s' is not a known single-component expression slot)",
 				expressionType);
-			return 0;
+			return false;
 		}
 		for (int i = 0; i < ITEM_FLOATEXP_TGT__COUNT; i++)
 		{
@@ -6889,13 +6589,13 @@ namespace zonetool::h1
 				{
 					if (item->floatExpressions[i].expression)
 					{
-						PC_SourceError(/*handle,*/ "redefinition of expression for '%s', component '%s.", expressionType, expressionComponent);
-						return 0;
+						PC_SourceError("redefinition of expression for '%s', component '%s.", expressionType, expressionComponent);
+						return false;
 					}
 					else
 					{
-						if (!Expression_Read(/*handle,*/ &item->floatExpressions[i].expression))
-							return 0;
+						if (!Expression_Read(&item->floatExpressions[i].expression))
+							return false;
 						if (target == ITEM_FLOATEXP_TGT_FORECOLOR_R ||
 							target == ITEM_FLOATEXP_TGT_FORECOLOR_G ||
 							target == ITEM_FLOATEXP_TGT_FORECOLOR_B ||
@@ -6903,12 +6603,12 @@ namespace zonetool::h1
 						{
 							Window_AddDynamicFlags(&item->window, WINDOWDYNAMIC_FORECOLOR);
 						}
-						return 1;
+						return true;
 					}
 				}
 			}
-			if (!Expression_Read(/*handle,*/ &item->floatExpressions[item->floatExpressionCount].expression))
-				return 0;
+			if (!Expression_Read(&item->floatExpressions[item->floatExpressionCount].expression))
+				return false;
 			if (target == ITEM_FLOATEXP_TGT_FORECOLOR_R ||
 				target == ITEM_FLOATEXP_TGT_FORECOLOR_G ||
 				target == ITEM_FLOATEXP_TGT_FORECOLOR_B ||
@@ -6918,118 +6618,118 @@ namespace zonetool::h1
 			}
 			item->floatExpressions[item->floatExpressionCount].target = target;
 			item->floatExpressionCount++;
-			return 1;
+			return true;
 		}
-		PC_SourceError(/*handle,*/ "unknown exp type and component '%s' '%s'", expressionType, expressionComponent);
-		return 0;
+		PC_SourceError("unknown exp type and component '%s' '%s'", expressionType, expressionComponent);
+		return false;
 	}
 
-	int ItemParse_gameMsgWindowIndex(itemDef_t* item/*, int handle*/)
+	bool ItemParse_gameMsgWindowIndex(itemDef_t* item)
 	{
-		return PC_Int_Parse(/*handle,*/ &item->gameMsgWindowIndex);
+		return PC_Int_Parse(&item->gameMsgWindowIndex);
 	}
 
-	int ItemParse_gameMsgWindowMode(itemDef_t* item/*, int handle*/)
+	bool ItemParse_gameMsgWindowMode(itemDef_t* item)
 	{
-		return PC_Int_Parse(/*handle,*/ &item->gameMsgWindowMode);
+		return PC_Int_Parse(&item->gameMsgWindowMode);
 	}
 
-	int ItemParse_selectBorder(itemDef_t* item/*, int handle*/)
+	bool ItemParse_selectBorder(itemDef_t* item)
 	{
 		listBoxDef_s* listPtr;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		listPtr = Item_GetListBoxDef(item);
 		if (listPtr)
-			return PC_Color_Parse(/*handle,*/ &listPtr->selectBorder);
-		return 0;
+			return PC_Color_Parse(&listPtr->selectBorder);
+		return false;
 	}
 
-	int ItemParse_disableColor(itemDef_t* item/*, int handle*/)
+	bool ItemParse_disableColor(itemDef_t* item)
 	{
-		return PC_Color_Parse(/*handle,*/ &item->window.disableColor);
+		return PC_Color_Parse(&item->window.disableColor);
 	}
 
-	int ItemParse_selectIcon(itemDef_t* item/*, int handle*/)
+	bool ItemParse_selectIcon(itemDef_t* item)
 	{
 		listBoxDef_s* listPtr;
 		const char* name;
 
-		Item_ValidateTypeData(item/*, handle*/);
+		Item_ValidateTypeData(item);
 		listPtr = Item_GetListBoxDef(item);
 		if (!listPtr)
-			return 0;
-		if (!PC_String_Parse(/*handle,*/ &name))
-			return 0;
+			return false;
+		if (!PC_String_Parse(&name))
+			return false;
 
 		listPtr->selectIcon = zmem->manual_allocate<Material>(sizeof(char*));
 		listPtr->selectIcon->name = name;
 		_strlwr((char*)listPtr->selectIcon->name);
-		return 1;
+		return true;
 	}
 
-	int ItemParse_spacing(itemDef_t* item/*, int handle*/)
+	bool ItemParse_spacing(itemDef_t* item)
 	{
 		newsTickerDef_s* tickerPtr;
 		int spacing;
 
-		Item_ValidateTypeData(/*handle,*/ item);
+		Item_ValidateTypeData(item);
 		tickerPtr = Item_GetNewsTickerDef(item);
 		if (!tickerPtr)
-			return 0;
-		if (!PC_Int_Parse(/*handle,*/ &spacing) || spacing < 0)
-			return 0;
+			return false;
+		if (!PC_Int_Parse(&spacing) || spacing < 0)
+			return false;
 		tickerPtr->spacing = spacing;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_speed(itemDef_t* item/*, int handle*/)
+	bool ItemParse_speed(itemDef_t* item)
 	{
 		newsTickerDef_s* tickerPtr;
 		int speed;
 
-		Item_ValidateTypeData(/*handle,*/ item);
+		Item_ValidateTypeData(item);
 		tickerPtr = Item_GetNewsTickerDef(item);
 		if (!tickerPtr)
-			return 0;
-		if (!PC_Int_Parse(/*handle,*/ &speed) || speed < 0)
-			return 0;
+			return false;
+		if (!PC_Int_Parse(&speed) || speed < 0)
+			return false;
 		tickerPtr->speed = speed;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_newsfeed(itemDef_t* item/*, int handle*/)
+	bool ItemParse_newsfeed(itemDef_t* item)
 	{
 		newsTickerDef_s* tickerPtr;
 		int feedId;
 
-		Item_ValidateTypeData(/*handle,*/ item);
+		Item_ValidateTypeData(item);
 		tickerPtr = Item_GetNewsTickerDef(item);
 		if (!tickerPtr)
-			return 0;
-		if (!PC_Int_Parse(/*handle,*/ &feedId))
-			return 0;
+			return false;
+		if (!PC_Int_Parse(&feedId))
+			return false;
 		tickerPtr->feedId = feedId;
-		return 1;
+		return true;
 	}
 
-	int ItemParse_glowColor(itemDef_t* item/*, int handle*/)
+	bool ItemParse_glowColor(itemDef_t* item)
 	{
-		Item_ValidateTypeData(item/*, handle*/);
-		return PC_Color_Parse(/*handle,*/ &item->glowColor);
+		Item_ValidateTypeData(item);
+		return PC_Color_Parse(&item->glowColor);
 	}
 
-	int ItemParse_decodeEffect(itemDef_t* item/*, int handle*/)
+	bool ItemParse_decodeEffect(itemDef_t* item)
 	{
-		Item_ValidateTypeData(item/*, handle*/);
-		if (!PC_Int_Parse(/*handle,*/ &item->fxLetterTime)
-			|| !PC_Int_Parse(/*handle,*/ &item->fxDecayStartTime)
-			|| !PC_Int_Parse(/*handle,*/ &item->fxDecayDuration))
+		Item_ValidateTypeData(item);
+		if (!PC_Int_Parse(&item->fxLetterTime)
+			|| !PC_Int_Parse(&item->fxDecayStartTime)
+			|| !PC_Int_Parse(&item->fxDecayDuration))
 		{
-			return 0;
+			return false;
 		}
 		item->decayActive = 1;
-		return 1;
+		return true;
 	}
 
 	parse_itemdef_func* find_itemdef_func(const char* keyword)
@@ -7129,63 +6829,63 @@ namespace zonetool::h1
 		return nullptr;
 	}
 
-	int Item_Parse(/*int handle,*/ itemDef_t* item)
+	bool Item_Parse(itemDef_t* item)
 	{
 		parse_itemdef_func* key;
 		pc_token_s token;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (token.string[0] != '{')
-			return 0;
+			return false;
 		do
 		{
 			while (1)
 			{
 				do
 				{
-					if (!PC_ReadTokenHandle(/*handle,*/ &token))
+					if (!PC_ReadTokenHandle(&token))
 					{
-						PC_SourceError(/*handle,*/ "end of file inside menu item");
-						return 0;
+						PC_SourceError("end of file inside menu item");
+						return false;
 					}
 					if (token.string[0] == '}')
-						return 1;
+						return true;
 				} while (token.string[0] == ';');
 				key = find_itemdef_func(token.string);
 				if (key)
 					break;
-				PC_SourceError(/*handle,*/ "unknown menu item keyword %s", token.string);
+				PC_SourceError("unknown menu item keyword %s", token.string);
 			}
-		} while (key->func(item/*, handle*/));
-		PC_SourceError(/*handle,*/ "couldn't parse menu item keyword %s", token.string);
-		return 0;
+		} while (key->func(item));
+		PC_SourceError("couldn't parse menu item keyword %s", token.string);
+		return false;
 	}
 
-	int MenuParse_itemDef(menuDef_t* menu/*, int handle*/)
+	bool MenuParse_itemDef(menuDef_t* menu)
 	{
 		itemDef_t* item;
 
 		if (menu->itemCount >= MAX_ITEMDEFS_PER_MENUDEF)
 		{
-			PC_SourceError(/*handle,*/ "too many itemDefs for menu '%s', MAX is %i", menu->window.name, MAX_ITEMDEFS_PER_MENUDEF);
-			return 0;
+			PC_SourceError("too many itemDefs for menu '%s', MAX is %i", menu->window.name, MAX_ITEMDEFS_PER_MENUDEF);
+			return false;
 		}
 		else
 		{
 			item = zmem->allocate<itemDef_t>();
 			Item_Init(item);
-			if (!Item_Parse(/*handle,*/ item))
+			if (!Item_Parse(item))
 			{
 				//Menu_FreeItemMemory(item);
-				return 0;
+				return false;
 			}
 			//Item_PostParse(item);
 			Item_InitControls(item);
 			item->parent = menu;
 			menu->items[menu->itemCount++] = item;
 		}
-		return 1;
+		return true;
 	}
 
 	parse_menudef_func* find_menudef_func(const char* keyword)
@@ -7248,15 +6948,15 @@ namespace zonetool::h1
 		return nullptr;
 	}
 
-	int Menu_Parse(/*int handle,*/ menuDef_t* menu)
+	bool Menu_Parse(menuDef_t* menu)
 	{
 		parse_menudef_func* key;
 		pc_token_s token;
 
-		if (!PC_ReadTokenHandle(/*handle,*/ &token))
-			return 0;
+		if (!PC_ReadTokenHandle(&token))
+			return false;
 		if (token.string[0] != '{')
-			return 0;
+			return false;
 		do
 		{
 			while (1)
@@ -7264,23 +6964,23 @@ namespace zonetool::h1
 				do
 				{
 					memset(&token, 0, sizeof(pc_token_s));
-					if (!PC_ReadTokenHandle(/*handle,*/ &token))
+					if (!PC_ReadTokenHandle(&token))
 					{
-						PC_SourceError(/*handle,*/ "end of file inside menu");
-						return 0;
+						PC_SourceError("end of file inside menu");
+						return false;
 					}
 					if (token.string[0] == '}')
-						return 1;
+						return true;
 				} while (token.string[0] == ';');
 				key = find_menudef_func(token.string);
 				if (key)
 					break;
-				PC_SourceError(/*handle,*/ "unknown menu keyword %s", token.string);
-				return 0;
+				PC_SourceError("unknown menu keyword %s", token.string);
+				return false;
 			}
-		} while (key->func(menu/*, handle,*/));
-		PC_SourceError(/*handle,*/ "couldn't parse menu keyword %s", token.string);
-		return 0;
+		} while (key->func(menu));
+		PC_SourceError("couldn't parse menu keyword %s", token.string);
+		return false;
 	}
 
 	void Menu_Init(menuDef_t* menu)
@@ -7290,7 +6990,7 @@ namespace zonetool::h1
 		Window_Init(&menu->window);
 	}
 
-	bool Menu_New(/*int handle,*/)
+	bool Menu_New()
 	{
 		bool result;
 		menuDef_t* menu;
@@ -7298,31 +6998,31 @@ namespace zonetool::h1
 		menu = zmem->allocate<menuDef_t>();
 
 		Menu_Init(menu);
-		if (Menu_Parse(/*handle,*/ menu))
+		if (Menu_Parse(menu))
 		{
 			if (menu->window.name)
 			{
 				//Menu_PostParse(menu);
 				if (menuList->menuCount >= MAX_MENUDEFS_PER_MENULIST)
 				{
-					PC_SourceError(/*handle,*/ "too many menuDefs in menuList %s, MAX is %i", menuList->name, MAX_MENUDEFS_PER_MENULIST);
-					result = 0;
+					PC_SourceError("too many menuDefs in menuList %s, MAX is %i", menuList->name, MAX_MENUDEFS_PER_MENULIST);
+					result = false;
 					return result;
 				}
 				menuList->menus[menuList->menuCount++] = menu;
-				result = 1;
+				result = true;
 			}
 			else
 			{
-				PC_SourceError(/*handle,*/ "menu has no name");
+				PC_SourceError("menu has no name");
 				//Menu_FreeMemory(menu);
-				result = 0;
+				result = false;
 			}
 		}
 		else
 		{
 			//Menu_FreeMemory(menu);
-			result = 0;
+			result = false;
 		}
 		return result;
 	}
@@ -7343,7 +7043,7 @@ namespace zonetool::h1
 
 		if (handle)
 		{
-			while (PC_ReadTokenHandle(/*handle,*/ &token))
+			while (PC_ReadTokenHandle(&token))
 			{
 				if (_stricmp(token.string, "}") && _stricmp(token.string, "{"))
 				{
@@ -7352,12 +7052,12 @@ namespace zonetool::h1
 						if (_stricmp(token.string, "menudef"))
 						{
 							PC_SourceError(
-								/*handle,*/
+
 								"Unknown token %s in menu file.  Expected \"menudef\" or \"assetglobaldef\".",
 								token.string);
 							break;
 						}
-						else if (!Menu_New(/*handle,*/))
+						else if (!Menu_New())
 						{
 							break;
 						}
@@ -7369,12 +7069,12 @@ namespace zonetool::h1
 				}
 			}
 			//PC_FreeSourceHandle(handle);
-			result = 1;
+			result = true;
 		}
 		else
 		{
 			ZONETOOL_ERROR("Couldn't find menu file '%s'", menuFile);
-			result = 0;
+			result = false;
 		}
 
 		return result;
@@ -7413,8 +7113,7 @@ namespace zonetool::h1
 	}
 
 	void menu_list::prepare(zone_buffer* buf, zone_memory* mem)
-	{
-	}
+	{}
 
 	void menu_list::load_depending(zone_base* zone)
 	{
@@ -7466,8 +7165,8 @@ namespace zonetool::h1
 	const char* menu_list::get_tabs()
 	{
 		static char tabs[10];
-		const int n = indentCounter < 9 ? indentCounter : 9; // cap at 9 tabs
-		for (int i = 0; i < n; ++i) tabs[i] = '\t';
+		const int n = std::clamp(indentCounter, 0, 9); // cap at 9 tabs
+		memset(tabs, '\t', n);
 		tabs[n] = '\0';
 		return tabs;
 	}
@@ -7600,7 +7299,6 @@ namespace zonetool::h1
 
 	void menu_list::emit_rect(const char* name, rectDef_s& rect)
 	{
-		// TODO: Some pre-processing may be needed
 		fprintf(fp, "%s%s %g %g %g %g %i %i\n", get_tabs(), name, rect.x, rect.y, rect.w, rect.h, rect.horzAlign, rect.vertAlign);
 	}
 
@@ -7614,148 +7312,120 @@ namespace zonetool::h1
 
 	void menu_list::emit_statement(const char* name, Statement_s* statement, bool semiColon, bool linebreak)
 	{
-		if (statement)
+		if (!statement)
 		{
-			const bool clean_statements = true;
-			int num_open_parenthesis = 0;
+			return;
+		}
 
-			if (name)
-			{
-				fprintf(fp, "%s%s", get_tabs(), name);
-			}
+		if (name)
+		{
+			fprintf(fp, "%s%s", get_tabs(), name);
+		}
 
-			if (clean_statements)
+		// wrap the whole expression in parentheses unless it already starts with one
+		const bool wrap_in_parens = statement->entries[0].data.op != OP_LEFTPAREN;
+		if (wrap_in_parens)
+		{
+			fputs(" (", fp);
+		}
+
+		int num_open_parenthesis = 0;
+
+		for (auto i = 0; i < statement->numEntries; i++)
+		{
+			const auto& entry = statement->entries[i];
+
+			// a leading '!' suppresses the space before the following token
+			const bool prev_is_not = i > 0 && statement->entries[i - 1].data.op == OP_NOT;
+
+			if (entry.type == OPERATOR)
 			{
-				if (statement->entries[0].data.op != OP_LEFTPAREN)
+				const auto op = entry.data.op;
+				if (op < OP_FIRSTFUNCTIONCALL)
 				{
-					fputs(" (", fp);
-				}
-			}
-
-			for (auto i = 0; i < statement->numEntries; i++)
-			{
-				int type = statement->entries[i].type;
-				if (type == OPERATOR)
-				{
-					auto op = statement->entries[i].data.op;
-					if (op < OP_FIRSTFUNCTIONCALL)
+					if (op == OP_LEFTPAREN)
 					{
-						if (statement->entries[i - 1].data.op == OP_RIGHTPAREN && op == OP_LEFTPAREN)
-						{
-							//++i;
-							//continue;
-						}
-
-						if (statement->entries[i].data.op == OP_LEFTPAREN)
-						{
-							++num_open_parenthesis;
-						}
-						else if (statement->entries[i].data.op == OP_RIGHTPAREN)
-						{
-							--num_open_parenthesis;
-						}
-
-						if (statement->entries[i - 1].data.op == OP_NOT)
-						{
-							fprintf(fp, "%s", g_expOperatorNames[op]);
-						}
-						else
-						{
-							fprintf(fp, " %s", g_expOperatorNames[op]);
-						}
-					}
-					else if (op >= OP_STATICDVARINT && op <= OP_STATICDVARSTRING)
-					{
-						i++;
-
-						std::string command;
-						switch (op)
-						{
-						case OP_STATICDVARINT:
-							command = "dvarint";
-							break;
-						case OP_STATICDVARBOOL:
-							command = "dvarbool";
-							break;
-						case OP_STATICDVARFLOAT:
-							command = "dvarfloat";
-							break;
-						case OP_STATICDVARSTRING:
-							command = "dvarstring";
-							break;
-						}
-
-						command += "( \"";
-						command += statement->supportingData->staticDvarList.staticDvars[statement->entries[i].data.operand.internals.intVal]->dvarName;
-						command += "\" )";
-
-						if (statement->entries[i - 2].data.op == OP_NOT)
-						{
-							fprintf(fp, "%s", command.c_str());
-						}
-						else
-						{
-							fprintf(fp, " %s", command.c_str());
-						}
-
-						i++;
-					}
-					else
-					{
-						if (statement->entries[i - 1].data.op == OP_NOT)
-							fprintf(fp, "%s(", g_expOperatorNames[op]);
-						else
-							fprintf(fp, " %s(", g_expOperatorNames[op]);
 						++num_open_parenthesis;
 					}
-				}
-				else if (type == OPERAND)
-				{
-					switch (statement->entries[i].data.operand.dataType)
+					else if (op == OP_RIGHTPAREN)
 					{
-					case VAL_INT:
-						fprintf(fp, " %i", statement->entries[i].data.operand.internals.intVal);
+						--num_open_parenthesis;
+					}
+
+					fprintf(fp, prev_is_not ? "%s" : " %s", g_expOperatorNames[op]);
+				}
+				else if (op >= OP_STATICDVARINT && op <= OP_STATICDVARSTRING)
+				{
+					const char* command = "";
+					switch (op)
+					{
+					case OP_STATICDVARINT:
+						command = "dvarint";
 						break;
-					case VAL_FLOAT:
-						fprintf(fp, " %g", statement->entries[i].data.operand.internals.floatVal);
+					case OP_STATICDVARBOOL:
+						command = "dvarbool";
 						break;
-					case VAL_STRING:
-						fprintf(fp, " \"%s\"", escape_string(statement->entries[i].data.operand.internals.stringVal.string).c_str());
+					case OP_STATICDVARFLOAT:
+						command = "dvarfloat";
 						break;
-					case VAL_FUNCTION:
-						emit_statement(nullptr, statement->entries[i].data.operand.internals.function, false, false);
+					case OP_STATICDVARSTRING:
+						command = "dvarstring";
 						break;
 					}
+
+					// the dvar index lives in the operand that follows the op
+					const auto dvarIndex = statement->entries[++i].data.operand.internals.intVal;
+					const char* dvarName = statement->supportingData->staticDvarList.staticDvars[dvarIndex]->dvarName;
+
+					fprintf(fp, prev_is_not ? "%s( \"%s\" )" : " %s( \"%s\" )", command, dvarName);
+
+					i++;
 				}
-			}
-
-			if (num_open_parenthesis > 1)
-			{
-				printf("something is wrong but i fix\n");
-			}
-			while (num_open_parenthesis > 0)
-			{
-				fputs(" )", fp);
-				num_open_parenthesis -= 1;
-			}
-
-			if (clean_statements)
-			{
-				if (statement->entries[0].data.op != OP_LEFTPAREN)
+				else
 				{
-					fputs(" )", fp);
+					fprintf(fp, prev_is_not ? "%s(" : " %s(", g_expOperatorNames[op]);
+					++num_open_parenthesis;
 				}
 			}
-
-			if (semiColon)
+			else if (entry.type == OPERAND)
 			{
-				fputs(";", fp);
+				switch (entry.data.operand.dataType)
+				{
+				case VAL_INT:
+					fprintf(fp, " %i", entry.data.operand.internals.intVal);
+					break;
+				case VAL_FLOAT:
+					fprintf(fp, " %g", entry.data.operand.internals.floatVal);
+					break;
+				case VAL_STRING:
+					fprintf(fp, " \"%s\"", escape_string(entry.data.operand.internals.stringVal.string).c_str());
+					break;
+				case VAL_FUNCTION:
+					emit_statement(nullptr, entry.data.operand.internals.function, false, false);
+					break;
+				}
 			}
+		}
 
-			if (linebreak)
-			{
-				fputs("\n", fp);
-			}
+		while (num_open_parenthesis > 0)
+		{
+			fputs(" )", fp);
+			--num_open_parenthesis;
+		}
+
+		if (wrap_in_parens)
+		{
+			fputs(" )", fp);
+		}
+
+		if (semiColon)
+		{
+			fputs(";", fp);
+		}
+
+		if (linebreak)
+		{
+			fputs("\n", fp);
 		}
 	}
 
@@ -7831,8 +7501,6 @@ namespace zonetool::h1
 	{
 		if (set)
 		{
-			//const bool formatStatement = true;
-
 			if (name)
 			{
 				fprintf(fp, "%s%s\n", get_tabs(), name);
@@ -8161,16 +7829,9 @@ namespace zonetool::h1
 		pop_indent();
 	}
 
-	void menu_list::dump_menudef(menuDef_t* asset)
-	{
-		emit_menu_def(asset);
-	}
-
 	void menu_list::dump(MenuList* asset)
 	{
-		const auto path = asset->name;
-
-		auto file = filesystem::file(path);
+		auto file = filesystem::file(asset->name);
 		file.open("wb");
 		fp = file.get_fp();
 		if (fp)
@@ -8180,7 +7841,7 @@ namespace zonetool::h1
 			push_indent();
 			for (int i = 0; i < asset->menuCount; i++)
 			{
-				dump_menudef(asset->menus[i]);
+				emit_menu_def(asset->menus[i]);
 			}
 			pop_indent();
 		}
@@ -8188,5 +7849,3 @@ namespace zonetool::h1
 		file.close();
 	}
 }
-
-#pragma warning( pop ) 
