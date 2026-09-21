@@ -10,4 +10,8 @@ namespace zonetool::t7
 	WEAK::t7::game::symbol<XZoneName> g_zoneNames{ 0x146E83270 };
 	WEAK::t7::game::symbol<unsigned int> g_zoneCount{ 0x14699D21C };
 	WEAK::t7::game::symbol<unsigned short> g_zoneIndex{ 0x1469BB268 };
+
+	constexpr auto ASSET_HASH_BUCKET_COUNT = 0x26400;
+	WEAK::t7::game::symbol<unsigned int> g_assetHashTable{ 0x146904070 };
+	WEAK::t7::game::symbol<XAssetEntry> g_assetEntries{ 0x1469BB270 };
 }

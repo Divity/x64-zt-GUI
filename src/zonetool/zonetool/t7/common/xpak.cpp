@@ -90,94 +90,75 @@ namespace zonetool::t7
 				}
 			}
 
-			// this shit is so broken
 			std::vector<std::uint8_t> extract(const void* data, const size_t size, const size_t decompressedSize)
 			{
-				std::vector<std::uint8_t> out_buffer;
-				out_buffer.reserve(decompressedSize); // Reserve space to avoid frequent reallocations
+				std::vector<std::uint8_t> out_buffer(decompressedSize);
 
-				auto data_ptr = reinterpret_cast<const char*>(data);
-				auto data_end = data_ptr + size;
+				const auto* base = reinterpret_cast<const char*>(data);
+				size_t pos = 0;
+				size_t written = 0;
 
-				const auto write = [&](const void* data, const size_t len)
+				while (pos + sizeof(XPakDataHeader) <= size && written < decompressedSize)
 				{
-					const char* char_data = reinterpret_cast<const char*>(data);
-					for (size_t i = 0; i < len; i++)
-					{
-						out_buffer.push_back(static_cast<std::uint8_t>(char_data[i]));
-					}
-				};
-
-				while (data_ptr < data_end)
-				{
-					if (data_ptr + sizeof(XPakDataHeader) > data_end)
-					{
-						// Handle error: not enough data for header
-						break;
-					}
-
 					XPakDataHeader header{};
-					std::memcpy(&header, data_ptr, sizeof(XPakDataHeader));
-					data_ptr += sizeof(XPakDataHeader);
+					std::memcpy(&header, base + pos, sizeof(header));
+					pos += sizeof(header);
 
 					if (header.Count > 30)
 					{
-						// fucked up shit fuck
-						data_ptr -= sizeof(XPakDataHeader);
-						data_ptr++;
-						continue;
+						break;
 					}
 
-					for (uint32_t i = 0; i < header.Count; i++)
+					for (uint32_t i = 0; i < header.Count && written < decompressedSize; i++)
 					{
-						// Unpack the command information
 						const size_t blockSize = (header.Commands[i] & 0xFFFFFF);
 						const size_t flag = (header.Commands[i] >> 24);
 
-						std::string buffer;
+						if (pos + blockSize > size)
+						{
+							return {};
+						}
+
+						const auto* block = base + pos;
+						const auto remaining = decompressedSize - written;
 
 						switch (flag)
 						{
 						case 0x3: // compressed (lz4)
 						{
-							buffer.resize(0x10000);
-							const size_t decompressedResult = LZ4_decompress_safe(data_ptr, buffer.data(), static_cast<int>(blockSize), static_cast<int>(buffer.size()));
-							if (decompressedResult < 0 || decompressedResult > std::numeric_limits<std::uint32_t>::max())
+							const auto result = LZ4_decompress_safe(block,
+								reinterpret_cast<char*>(out_buffer.data()) + written,
+								static_cast<int>(blockSize), static_cast<int>(remaining));
+							if (result <= 0)
 							{
-								// Handle decompression error
-								__debugbreak();
+								return {};
 							}
-							buffer.resize(decompressedResult);
+							written += static_cast<size_t>(result);
 							break;
 						}
 						case 0x0: // raw data
 						{
-							if (data_ptr + blockSize > data_end)
-							{
-								// Handle error: not enough data for block
-								break;
-							}
-							buffer.resize(blockSize);
-							std::memcpy(buffer.data(), data_ptr, blockSize);
+							const auto copy_size = std::min(blockSize, remaining);
+							std::memcpy(out_buffer.data() + written, block, copy_size);
+							written += copy_size;
 							break;
 						}
-						default:
+						default: // oodle, unused by t7
 						{
-							data_ptr = data_end; // idk why this shit is so fucked
-							break;
+							return {};
 						}
 						}
 
-						data_ptr += blockSize;
-
-						write(buffer.data(), buffer.size());
+						pos += blockSize;
 					}
 
-					//data_ptr = align_value(data_ptr, 0x80);
+					pos = (pos + 0x7F) & ~static_cast<size_t>(0x7F);
 				}
 
+				out_buffer.resize(written);
 				return out_buffer;
 			}
+
 
 			std::vector<std::uint8_t> decompress_xpak_data(std::string compressed_data, size_t decompressedSize)
 			{
@@ -187,7 +168,8 @@ namespace zonetool::t7
 				}
 				catch (const std::exception& e)
 				{
-					ZONETOOL_FATAL("%s", e.what());
+					ZONETOOL_WARNING("failed to decompress xpak data: %s", e.what());
+					return {};
 				}
 			}
 
@@ -205,7 +187,9 @@ namespace zonetool::t7
 
 				if (header.Magic != 0x4950414b)
 				{
-					__debugbreak();
+					ZONETOOL_WARNING("skipping \"%s\", not a valid xpak", pak_path.data());
+					file.close();
+					return;
 				}
 
 				file.seek(header.HashOffset, SEEK_SET);

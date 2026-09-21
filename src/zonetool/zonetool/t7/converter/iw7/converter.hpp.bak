@@ -5,7 +5,6 @@
 #include "assets/fxeffectdef.hpp"
 #include "assets/gfximage.hpp"
 #include "assets/material.hpp"
-#include "assets/particle_system.hpp"
 #include "assets/weapon.hpp"
 #include "assets/xanim.hpp"
 #include "assets/xmodel.hpp"

@@ -65,27 +65,42 @@ namespace zonetool::t7
 				new_asset->randomDataInt = reinterpret_cast<int*>(asset->randomDataInt);
 
 				// Credits: Scobalula/Greyhound CoDXAnimTranslator::TranslateXAnim
-				if (new_asset->dataShortCount)
+				if (asset->dataShortCount)
 				{
-					new_asset->dataShort = allocator.allocate_array<short>(new_asset->dataShortCount);
-					new_asset->randomDataShort = allocator.allocate_array<short>(new_asset->randomDataShortCount);
+					new_asset->dataShort = allocator.allocate_array<short>(asset->dataShortCount);
+					new_asset->randomDataShort = allocator.allocate_array<short>(asset->randomDataShortCount);
 
-					std::memcpy(new_asset->dataShort, asset->dataShort, sizeof(short) * new_asset->dataShortCount);
-					std::memcpy(new_asset->randomDataShort, asset->randomDataShort, sizeof(short) * new_asset->randomDataShortCount);
+					std::memcpy(new_asset->dataShort, asset->dataShort, sizeof(short) * asset->dataShortCount);
+					std::memcpy(new_asset->randomDataShort, asset->randomDataShort, sizeof(short) * asset->randomDataShortCount);
 
 					short* newData = new_asset->dataShort;
 					short* newRandom = new_asset->randomDataShort;
 					short* data = asset->dataShort;
 					short* random = asset->randomDataShort;
 
-					auto readConvert = [](short*& dst, short*& src, uint32_t count)
+					const short* const dataEnd = new_asset->dataShort + asset->dataShortCount;
+					const short* const randomEnd = new_asset->randomDataShort + asset->randomDataShortCount;
+
+					auto overflowed = false;
+
+					auto readConvert = [&](short*& dst, short*& src, const short* end, uint32_t count)
 					{
+						if (static_cast<uint32_t>(end - dst) < count)
+						{
+							overflowed = true;
+							return;
+						}
 						for (uint32_t i = 0; i < count; ++i)
 							*dst++ = QuatInt16::ToInt16(half_float::half_to_float(*src++));
 					};
 
-					auto readRaw = [](short*& dst, short*& src, uint32_t count = 1)
+					auto readRaw = [&](short*& dst, short*& src, const short* end, uint32_t count = 1)
 					{
+						if (static_cast<uint32_t>(end - dst) < count)
+						{
+							overflowed = true;
+							return;
+						}
 						for (uint32_t i = 0; i < count; ++i)
 							*dst++ = *src++;
 					};
@@ -94,16 +109,22 @@ namespace zonetool::t7
 
 					auto processBoneData = [&](int boneCountIndex, int rotSize)
 					{
-						for (int i = 0; i < asset->boneCount[boneCountIndex]; ++i)
+						for (int i = 0; i < asset->boneCount[boneCountIndex] && !overflowed; ++i)
 						{
+							if (newData >= dataEnd)
+							{
+								overflowed = true;
+								break;
+							}
+
 							const uint16_t frameCount = *data;
-							readRaw(newData, data); // Frame count
+							readRaw(newData, data, dataEnd); // Frame count
 
 							if (frameSize == 2)
-								readRaw(newData, data); // Frame index
+								readRaw(newData, data, dataEnd, frameCount + 1); // Frame indices
 
-							for (int f = 0; f < frameCount + 1; ++f)
-								readConvert(newRandom, random, rotSize); // Rotation data
+							for (int f = 0; f < frameCount + 1 && !overflowed; ++f)
+								readConvert(newRandom, random, randomEnd, rotSize); // Rotation data
 						}
 					};
 
@@ -112,14 +133,21 @@ namespace zonetool::t7
 
 					auto processStaticBoneData = [&](int boneCountIndex, int rotSize)
 					{
-						for (int i = 0; i < asset->boneCount[boneCountIndex]; ++i)
-							readConvert(newData, data, rotSize); // Static rotation data
+						for (int i = 0; i < asset->boneCount[boneCountIndex] && !overflowed; ++i)
+							readConvert(newData, data, dataEnd, rotSize); // Static rotation data
 					};
 
 					processStaticBoneData(TwoDStaticRotatedBoneCount, 2);
 					processStaticBoneData(NormalStaticRotatedBoneCount, 4);
-				}
 
+					if (overflowed)
+					{
+						ZONETOOL_WARNING("xanim \"%s\" has unexpected short data, dumping it unconverted", asset->name);
+
+						std::memcpy(new_asset->dataShort, asset->dataShort, sizeof(short) * asset->dataShortCount);
+						std::memcpy(new_asset->randomDataShort, asset->randomDataShort, sizeof(short) * asset->randomDataShortCount);
+					}
+				}
 				new_asset->indices.data = reinterpret_cast<void*>(asset->indices.data);
 
 				new_asset->notify = allocator.allocate_array<zonetool::iw7::XAnimNotifyInfo>(new_asset->notifyCount);

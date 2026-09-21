@@ -5,6 +5,9 @@
 #include "zonetool/iw7/assets/xsurface.hpp"
 
 #include "zonetool/t7/common/xpak.hpp"
+#include "zonetool/t7/converter/iw7/model_offset.hpp"
+
+#include "game/shared.hpp"
 
 namespace zonetool::t7
 {
@@ -76,6 +79,10 @@ namespace zonetool::t7
 
 				REINTERPRET_CAST_SAFE(name);
 
+				// T7 weapon geometry is authored around tag_weapon; IW7 hangs viewmodels
+				// off j_gun. Re-author the mesh here so ported weapons sit in the hands.
+				const auto& offset = model_offset::get(asset->name ? asset->name : "");
+
 				byte* data = nullptr;
 				if (asset->shared && asset->shared->dataSize)
 				{
@@ -131,6 +138,11 @@ namespace zonetool::t7
 							new_surf->verts0.packedVerts0[j].xyz[1] = positions[j][1];
 							new_surf->verts0.packedVerts0[j].xyz[2] = positions[j][2];
 
+							if (offset.valid)
+							{
+								model_offset::apply_point(offset, new_surf->verts0.packedVerts0[j].xyz);
+							}
+
 							new_surf->verts0.packedVerts0[j].color.array[0] = verts[j].Color[0];
 							new_surf->verts0.packedVerts0[j].color.array[1] = verts[j].Color[1];
 							new_surf->verts0.packedVerts0[j].color.array[2] = verts[j].Color[2];
@@ -140,6 +152,21 @@ namespace zonetool::t7
 
 							new_surf->verts0.packedVerts0[j].normal.packed = verts[j].VertexNormal;
 							new_surf->verts0.packedVerts0[j].tangent.packed = verts[j].VertexTangent;
+
+							if (offset.valid)
+							{
+								// rotating the mesh means rotating its basis vectors too,
+								// otherwise lighting stays keyed to the old orientation
+								float n[4]{}, t[4]{};
+								PackedVec::Vec3UnpackUnitVec_IW8(new_surf->verts0.packedVerts0[j].normal.packed, n);
+								PackedVec::Vec3UnpackUnitVec_IW8(new_surf->verts0.packedVerts0[j].tangent.packed, t);
+
+								model_offset::apply_dir(offset, n);
+								model_offset::apply_dir(offset, t);
+
+								new_surf->verts0.packedVerts0[j].normal.packed = PackedVec::Vec3PackUnitVec_H1(n);
+								new_surf->verts0.packedVerts0[j].tangent.packed = PackedVec::Vec3PackUnitVec_H1(t);
+							}
 
 							float default_visibility[4] = { 0.0f, 0.0f, 1.0f, 0.0f };
 							new_surf->verts0.packedVerts0[j].selfVisibility.packed = self_visibility::XSurfacePackSelfVisibility(default_visibility);

@@ -1,0 +1,530 @@
+#include <std_include.hpp>
+#include "zonetool/t7/converter/iw7/include.hpp"
+#include "particle_system.hpp"
+
+#include "zonetool/iw7/assets/particle_system.hpp"
+
+// t7 fx are element based, iw7 vfx are a module graph.  iw7 weapons only consume
+// vfx - every shipped vfx package slot uses FX_COMBINED_VFX and none use the legacy
+// FxEffectDef path - so a converted .fxe cannot be referenced by a weapon and has to
+// become a ParticleSystemDef instead.
+//
+// each t7 FxElemDef becomes one ParticleEmitterDef carrying a single state, and the
+// element's fields are spread across that state's INIT and UPDATE module groups.
+// the built struct is handed to iw7's own writer rather than emitting .iw7VFX here.
+
+namespace zonetool::t7
+{
+	namespace converter::iw7
+	{
+		namespace particlesystem
+		{
+			namespace
+			{
+				namespace i7 = zonetool::iw7;
+
+				// referenced assets keep non null pointers into memory that is no longer
+				// mapped, so nothing here is dereferenced without checking it first
+				bool is_readable(const void* ptr, std::size_t size)
+				{
+					if (!ptr)
+					{
+						return false;
+					}
+
+					MEMORY_BASIC_INFORMATION mbi{};
+					if (!VirtualQuery(ptr, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT)
+					{
+						return false;
+					}
+
+					constexpr auto readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+						PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+					if (!(mbi.Protect & readable) || (mbi.Protect & PAGE_GUARD))
+					{
+						return false;
+					}
+
+					const auto* end = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
+					return static_cast<const char*>(ptr) + size <= end;
+				}
+
+				const char* safe_name(const char* name)
+				{
+					if (!is_readable(name, 1))
+					{
+						return nullptr;
+					}
+
+					MEMORY_BASIC_INFORMATION mbi{};
+					VirtualQuery(name, &mbi, sizeof(mbi));
+
+					const auto* end = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
+					for (const auto* it = name; it < end && (it - name) < 256; it++)
+					{
+						if (!*it)
+						{
+							return it == name ? nullptr : name;
+						}
+					}
+
+					return nullptr;
+				}
+
+				// materials are dumped under a flattened name, the effect has to ask for
+				// them the same way the material converter writes them
+				const char* convert_material_name(const char* name, utils::memory::allocator& allocator)
+				{
+					std::string clean = name;
+
+					const auto pos = clean.find_last_of("/\\");
+					const auto effect = clean.starts_with("ei/") || clean.starts_with("ec/") ||
+						clean.starts_with("el/") || clean.starts_with("vd/") ||
+						clean.starts_with("vdd/") || clean.starts_with("gfx_");
+
+					if (pos != std::string::npos)
+					{
+						clean = clean.substr(pos + 1);
+					}
+
+					for (auto i = 0u; i < clean.size(); i++)
+					{
+						switch (clean[i])
+						{
+						case '*': case '|': case ':': case '?':
+						case '<': case '>': case '\"':
+							clean[i] = '_';
+							break;
+						}
+					}
+
+					return allocator.duplicate_string((effect ? "el/"s : "mo/"s) + clean);
+				}
+
+				template <typename T>
+				T* alias_asset(const void* asset, const char* name, utils::memory::allocator& allocator)
+				{
+					if (!asset || !name)
+					{
+						return nullptr;
+					}
+
+					const auto stub = allocator.allocate<T>();
+					stub->name = name;
+					return stub;
+				}
+
+				// t7 element types, confirmed against the shipped effects once the
+				// FxElemDef layout was corrected (elemType sits at 0xC8, not 0xC4)
+				enum elem_type : unsigned char
+				{
+					ELEM_TYPE_SPRITE_BILLBOARD = 0,
+					ELEM_TYPE_SPRITE_ORIENTED = 1,
+					ELEM_TYPE_TAIL = 2,
+					ELEM_TYPE_TRAIL = 3,
+					ELEM_TYPE_FLARE = 4,
+					ELEM_TYPE_PARTICLE_SIM = 5,
+					ELEM_TYPE_CLOUD = 6,
+					ELEM_TYPE_SPARK_CLOUD = 7,
+					ELEM_TYPE_SPARK_FOUNTAIN = 8,
+					ELEM_TYPE_MODEL = 9,
+					ELEM_TYPE_OMNI_LIGHT = 10,
+					ELEM_TYPE_SPOT_LIGHT = 11,
+					ELEM_TYPE_SOUND = 12,
+					ELEM_TYPE_DECAL = 13,
+					ELEM_TYPE_RUNNER = 14,
+				};
+
+				unsigned int map_element_type(unsigned char type)
+				{
+					switch (type)
+					{
+					case ELEM_TYPE_SPRITE_ORIENTED: return i7::PARTICLE_ELEMENT_TYPE_ORIENTED_SPRITE;
+					case ELEM_TYPE_TAIL:            return i7::PARTICLE_ELEMENT_TYPE_TAIL;
+					case ELEM_TYPE_TRAIL:           return i7::PARTICLE_ELEMENT_TYPE_GEO_TRAIL;
+					case ELEM_TYPE_FLARE:           return i7::PARTICLE_ELEMENT_TYPE_FLARE;
+					case ELEM_TYPE_CLOUD:           return i7::PARTICLE_ELEMENT_TYPE_CLOUD;
+					case ELEM_TYPE_SPARK_CLOUD:     return i7::PARTICLE_ELEMENT_TYPE_SPARK_CLOUD;
+					case ELEM_TYPE_MODEL:           return i7::PARTICLE_ELEMENT_TYPE_MODEL;
+					case ELEM_TYPE_OMNI_LIGHT:      return i7::PARTICLE_ELEMENT_TYPE_LIGHT_OMNI;
+					case ELEM_TYPE_SPOT_LIGHT:      return i7::PARTICLE_ELEMENT_TYPE_LIGHT_SPOT;
+					case ELEM_TYPE_DECAL:           return i7::PARTICLE_ELEMENT_TYPE_DECAL;
+					case ELEM_TYPE_RUNNER:          return i7::PARTICLE_ELEMENT_TYPE_RUNNER;
+
+					// iw7 has no spark fountain or particle sim element; a billboard sprite
+					// is the closest thing that still draws rather than dropping the element
+					case ELEM_TYPE_SPARK_FOUNTAIN:
+					case ELEM_TYPE_PARTICLE_SIM:
+					case ELEM_TYPE_SPRITE_BILLBOARD:
+					default:                        return i7::PARTICLE_ELEMENT_TYPE_BILLBOARD_SPRITE;
+					}
+				}
+
+				// ---- curves ------------------------------------------------------------
+
+				// one control point per visual/velocity sample, spread evenly over life.
+				// invTimeDelta is what the runtime interpolates with, so it has to be the
+				// reciprocal gap to the next point and zero on the last one.
+				i7::ParticleCurveDef make_curve(const std::vector<float>& values,
+					utils::memory::allocator& allocator, float scale = 1.0f)
+				{
+					i7::ParticleCurveDef curve{};
+					curve.scale = scale;
+
+					const auto count = static_cast<int>(values.size());
+					if (count <= 0)
+					{
+						return curve;
+					}
+
+					curve.numControlPoints = count;
+					curve.controlPoints = allocator.allocate_array<i7::ParticleCurveControlPointDef>(count);
+
+					for (auto i = 0; i < count; i++)
+					{
+						auto& point = curve.controlPoints[i];
+						point.time = (count > 1) ? static_cast<float>(i) / static_cast<float>(count - 1) : 0.0f;
+						point.value = values[i];
+					}
+
+					for (auto i = 0; i < count - 1; i++)
+					{
+						const auto delta = curve.controlPoints[i + 1].time - curve.controlPoints[i].time;
+						curve.controlPoints[i].invTimeDelta = (delta > 0.0f) ? (1.0f / delta) : 0.0f;
+					}
+
+					return curve;
+				}
+
+				// ---- modules -----------------------------------------------------------
+
+				struct module_list
+				{
+					std::vector<i7::ParticleModuleDef> modules;
+
+					template <typename T>
+					T& add(i7::ParticleModuleType type)
+					{
+						i7::ParticleModuleDef def{};
+						def.moduleType = type;
+						this->modules.push_back(def);
+
+						auto& stored = this->modules.back();
+						auto& data = *reinterpret_cast<T*>(&stored.moduleData);
+						data.type = type;
+						return data;
+					}
+				};
+
+				void store_group(i7::ParticleModuleGroupDef* group, module_list& list,
+					utils::memory::allocator& allocator)
+				{
+					group->numModules = static_cast<int>(list.modules.size());
+					group->disabled = false;
+
+					if (list.modules.empty())
+					{
+						group->moduleDefs = nullptr;
+						return;
+					}
+
+					group->moduleDefs = allocator.allocate_array<i7::ParticleModuleDef>(list.modules.size());
+					std::memcpy(group->moduleDefs, list.modules.data(),
+						list.modules.size() * sizeof(i7::ParticleModuleDef));
+				}
+
+				// t7 keeps a base and an amplitude per sample; the base is the curve and the
+				// amplitude is the randomised spread, so min/max bracket the two
+				void build_init_modules(module_list& init, FxElemDef* def,
+					const i7::FxElemVisStateSample* vis, int visCount,
+					const i7::FxElemVelStateSample* vel, int velCount,
+					utils::memory::allocator& allocator)
+				{
+					auto& attribs = init.add<i7::ParticleModuleInitAttributes>(
+						i7::PARTICLE_MODULE_INIT_ATTRIBUTES);
+
+					if (vis && visCount > 0)
+					{
+						const auto& base = vis[0].base;
+						const auto& amp = vis[0].amplitude;
+
+						attribs.m_sizeMin.v[0] = base.size[0];
+						attribs.m_sizeMin.v[1] = base.size[1];
+						attribs.m_sizeMin.v[2] = base.scale;
+						attribs.m_sizeMax.v[0] = base.size[0] + amp.size[0];
+						attribs.m_sizeMax.v[1] = base.size[1] + amp.size[1];
+						attribs.m_sizeMax.v[2] = base.scale + amp.scale;
+
+						for (auto i = 0; i < 4; i++)
+						{
+							attribs.m_colorMin.v[i] = base.color[i];
+							attribs.m_colorMax.v[i] = base.color[i] + amp.color[i];
+						}
+					}
+
+					if (vel && velCount > 0)
+					{
+						const auto& frame = vel[0].local;
+						for (auto i = 0; i < 3; i++)
+						{
+							attribs.m_velocityMin.v[i] = frame.velocity.base[i];
+							attribs.m_velocityMax.v[i] = frame.velocity.base[i] + frame.velocity.amplitude[i];
+						}
+					}
+
+					// atlas playback
+					if (def->atlas.fps || def->atlas.indexRange)
+					{
+						auto& atlas = init.add<i7::ParticleModuleInitAtlas>(i7::PARTICLE_MODULE_INIT_ATLAS);
+						atlas.m_playRate = def->atlas.fps;
+						atlas.m_startFrame = def->atlas.index;
+						atlas.m_loopCount = def->atlas.loopCount;
+					}
+
+					// rotation: t7 stores an initial angle and a per axis angular velocity,
+					// iw7 wants an angle and a rate, so roll is the one that maps
+					auto& rotation = init.add<i7::ParticleModuleInitRotation>(
+						i7::PARTICLE_MODULE_INIT_ROTATION);
+					rotation.m_rotationAngle.min = def->initialRotation.base;
+					rotation.m_rotationAngle.max = def->initialRotation.base + def->initialRotation.amplitude;
+					rotation.m_rotationRate.min = def->angularVelocity[2].base;
+					rotation.m_rotationRate.max = def->angularVelocity[2].base + def->angularVelocity[2].amplitude;
+
+					if (def->elemType == ELEM_TYPE_TAIL)
+					{
+						auto& tail = init.add<i7::ParticleModuleInitTail>(i7::PARTICLE_MODULE_INIT_TAIL);
+						tail.m_tailLeading = false;
+						tail.m_scaleWithVelocity = true;
+						tail.m_averagePastVelocities = 1;
+					}
+					else if (def->elemType == ELEM_TYPE_SPRITE_ORIENTED)
+					{
+						auto& sprite = init.add<i7::ParticleModuleInitOrientedSprite>(
+							i7::PARTICLE_MODULE_INIT_ORIENTED_SPRITE);
+						sprite.m_orientationQuat.v[3] = 1.0f;
+					}
+
+					// visuals - only the single material case is carried across; the array
+					// forms hold per visual state entries that have no iw7 equivalent
+					const auto visual_count = def->visualCount;
+					if (def->elemType != ELEM_TYPE_MODEL && def->elemType != ELEM_TYPE_DECAL &&
+						def->elemType != ELEM_TYPE_RUNNER && def->elemType != ELEM_TYPE_SOUND &&
+						visual_count == 1 && is_readable(def->visuals.instance.material, sizeof(void*)))
+					{
+						const auto name = safe_name(*reinterpret_cast<const char* const*>(
+							def->visuals.instance.material));
+						if (name)
+						{
+							auto& mat = init.add<i7::ParticleModuleInitMaterial>(
+								i7::PARTICLE_MODULE_INIT_MATERIAL);
+							mat.m_linkedAssetList.numAssets = 1;
+							mat.m_linkedAssetList.assetList =
+								allocator.allocate_array<i7::ParticleLinkedAssetDef>(1);
+							mat.m_linkedAssetList.assetList[0].material =
+								alias_asset<i7::Material>(def->visuals.instance.material,
+									convert_material_name(name, allocator), allocator);
+						}
+					}
+				}
+
+				void build_update_modules(module_list& update, FxElemDef* def,
+					const i7::FxElemVisStateSample* vis, int visCount,
+					const i7::FxElemVelStateSample* vel, int velCount,
+					utils::memory::allocator& allocator)
+				{
+					if (vis && visCount > 0)
+					{
+						std::vector<float> width, height, r, g, b, a;
+						for (auto i = 0; i < visCount; i++)
+						{
+							width.push_back(vis[i].base.size[0]);
+							height.push_back(vis[i].base.size[1]);
+							r.push_back(vis[i].base.color[0]);
+							g.push_back(vis[i].base.color[1]);
+							b.push_back(vis[i].base.color[2]);
+							a.push_back(vis[i].base.color[3]);
+						}
+
+						auto& size = update.add<i7::ParticleModuleSizeGraph>(i7::PARTICLE_MODULE_SIZE_GRAPH);
+						size.firstCurve = true;
+						size.m_curves[0] = make_curve(width, allocator);
+						size.m_curves[1] = make_curve(height, allocator);
+						size.m_sizeBegin.v[0] = width.front();
+						size.m_sizeBegin.v[1] = height.front();
+						size.m_sizeEnd.v[0] = width.back();
+						size.m_sizeEnd.v[1] = height.back();
+
+						auto& color = update.add<i7::ParticleModuleColorGraph>(i7::PARTICLE_MODULE_COLOR_GRAPH);
+						color.firstCurve = true;
+						color.m_modulateColorByAlpha = true;
+						color.m_curves[0] = make_curve(r, allocator);
+						color.m_curves[1] = make_curve(g, allocator);
+						color.m_curves[2] = make_curve(b, allocator);
+						color.m_curves[3] = make_curve(a, allocator);
+					}
+
+					if (vel && velCount > 0)
+					{
+						std::vector<float> vx, vy, vz;
+						for (auto i = 0; i < velCount; i++)
+						{
+							vx.push_back(vel[i].local.velocity.base[0]);
+							vy.push_back(vel[i].local.velocity.base[1]);
+							vz.push_back(vel[i].local.velocity.base[2]);
+						}
+
+						auto& velocity = update.add<i7::ParticleModuleVelocityGraph>(
+							i7::PARTICLE_MODULE_VELOCITY_GRAPH);
+						velocity.m_curves[0] = make_curve(vx, allocator);
+						velocity.m_curves[1] = make_curve(vy, allocator);
+						velocity.m_curves[2] = make_curve(vz, allocator);
+						for (auto i = 0; i < 3; i++)
+						{
+							velocity.m_velocityBegin.v[i] = vel[0].local.velocity.base[i];
+							velocity.m_velocityEnd.v[i] = vel[velCount - 1].local.velocity.base[i];
+						}
+					}
+
+					if (def->gravity.base != 0.0f || def->gravity.amplitude != 0.0f)
+					{
+						auto& gravity = update.add<i7::ParticleModuleGravity>(i7::PARTICLE_MODULE_GRAVITY);
+						gravity.m_gravityPercentage.min = def->gravity.base;
+						gravity.m_gravityPercentage.max = def->gravity.base + def->gravity.amplitude;
+					}
+				}
+
+				// ---- emitter -----------------------------------------------------------
+
+				bool convert_elem(i7::ParticleEmitterDef* emitter, FxElemDef* def, bool looping,
+					utils::memory::allocator& allocator)
+				{
+					// t7 keeps msec, iw7 keeps seconds
+					constexpr auto to_sec = 1.0f / 1000.0f;
+
+					emitter->particleLife.min = static_cast<float>(def->lifeSpanMsec.base) * to_sec;
+					emitter->particleLife.max = static_cast<float>(
+						def->lifeSpanMsec.base + def->lifeSpanMsec.amplitude) * to_sec;
+
+					emitter->particleDelay.min = static_cast<float>(def->spawnDelayMsec.base) * to_sec;
+					emitter->particleDelay.max = static_cast<float>(
+						def->spawnDelayMsec.base + def->spawnDelayMsec.amplitude) * to_sec;
+
+					if (looping)
+					{
+						// spawn count over an interval becomes a rate per second
+						const auto interval = static_cast<float>(def->spawn.looping.intervalMsec) * to_sec;
+						const auto count = static_cast<float>(def->spawn.looping.count);
+						const auto rate = (interval > 0.0f) ? (count / interval) : count;
+
+						emitter->particleSpawnRate.min = rate;
+						emitter->particleSpawnRate.max = rate;
+						emitter->particleCountMax = static_cast<unsigned int>(std::max(1.0f, count * 4.0f));
+					}
+					else
+					{
+						emitter->particleBurstCount.min = def->spawn.oneShot.count.base;
+						emitter->particleBurstCount.max = def->spawn.oneShot.count.base +
+							def->spawn.oneShot.count.amplitude;
+						emitter->particleCountMax = static_cast<unsigned int>(
+							std::max(1, emitter->particleBurstCount.max));
+					}
+
+					emitter->emitterLife.min = emitter->particleLife.max;
+					emitter->emitterLife.max = emitter->particleLife.max;
+					emitter->spawnRangeSq.min = def->spawnRange.base * def->spawnRange.base;
+					emitter->spawnRangeSq.max = (def->spawnRange.base + def->spawnRange.amplitude) *
+						(def->spawnRange.base + def->spawnRange.amplitude);
+					emitter->spawnFrustumCullRadius = def->spawnFrustumCullRadius;
+					emitter->fadeOutMaxDistance = def->fadeOutRange.base + def->fadeOutRange.amplitude;
+
+					// samples are optional, and their counts are stored as intervals
+					const auto vis_count = def->visStateIntervalCount + 1;
+					const auto vel_count = def->velIntervalCount + 1;
+
+					const auto* vis = reinterpret_cast<const i7::FxElemVisStateSample*>(def->visSamples);
+					const auto* vel = reinterpret_cast<const i7::FxElemVelStateSample*>(def->velSamples);
+
+					if (!is_readable(vis, sizeof(i7::FxElemVisStateSample) * vis_count))
+					{
+						vis = nullptr;
+					}
+					if (!is_readable(vel, sizeof(i7::FxElemVelStateSample) * vel_count))
+					{
+						vel = nullptr;
+					}
+
+					module_list init{}, update{}, test{};
+					build_init_modules(init, def, vis, vis ? vis_count : 0, vel, vel ? vel_count : 0, allocator);
+					build_update_modules(update, def, vis, vis ? vis_count : 0, vel, vel ? vel_count : 0, allocator);
+
+					emitter->numStates = 1;
+					emitter->stateDefs = allocator.allocate<i7::ParticleStateDef>();
+					emitter->stateDefs->elementType = map_element_type(def->elemType);
+					emitter->stateDefs->moduleGroupDefs = allocator.allocate_array<i7::ParticleModuleGroupDef>(3);
+
+					store_group(&emitter->stateDefs->moduleGroupDefs[0], init, allocator);
+					store_group(&emitter->stateDefs->moduleGroupDefs[1], update, allocator);
+					store_group(&emitter->stateDefs->moduleGroupDefs[2], test, allocator);
+
+					return true;
+				}
+			}
+
+			zonetool::iw7::ParticleSystemDef* convert(FxEffectDef* asset, utils::memory::allocator& allocator)
+			{
+				const auto new_asset = allocator.allocate<i7::ParticleSystemDef>();
+
+				new_asset->name = asset->name;
+				new_asset->version = 15; // matches every stock iw7 vfx on disk
+				new_asset->drawFrustumCullRadius = asset->boundingBoxDim[0];
+				new_asset->updateFrustumCullRadius = asset->boundingBoxDim[0];
+
+				const auto looping = asset->elemDefCountLooping;
+				const auto count = looping + asset->elemDefCountOneShot + asset->elemDefCountEmission;
+				if (count <= 0 || !is_readable(asset->elemDefs, sizeof(FxElemDef)))
+				{
+					new_asset->numEmitters = 0;
+					return new_asset;
+				}
+
+				new_asset->emitterDefs = allocator.allocate_array<i7::ParticleEmitterDef>(count);
+
+				auto converted = 0;
+				for (auto i = 0; i < count; i++)
+				{
+					if (!is_readable(&asset->elemDefs[i], sizeof(FxElemDef)))
+					{
+						break;
+					}
+
+					if (convert_elem(&new_asset->emitterDefs[converted], &asset->elemDefs[i],
+						i < looping, allocator))
+					{
+						converted++;
+					}
+				}
+
+				if (converted < count)
+				{
+					ZONETOOL_WARNING("vfx \"%s\" only had %i of its %i elements loaded",
+						new_asset->name, converted, count);
+				}
+
+				new_asset->numEmitters = converted;
+				return new_asset;
+			}
+
+			void dump(FxEffectDef* asset)
+			{
+				if (!is_readable(asset, sizeof(FxEffectDef)) || !safe_name(asset->name))
+				{
+					return;
+				}
+
+				utils::memory::allocator allocator;
+				const auto converted_asset = convert(asset, allocator);
+				zonetool::iw7::particle_system::dump(converted_asset);
+			}
+		}
+	}
+}

@@ -3,6 +3,16 @@
 
 namespace zonetool::iw7
 {
+	namespace
+	{
+		const xmodel::bone_name_remap_t* bone_name_remap = nullptr;
+	}
+
+	void xmodel::set_bone_name_remap(const bone_name_remap_t* remap)
+	{
+		bone_name_remap = remap;
+	}
+
 	void xmodel::add_script_string(scr_string_t* ptr, const char* str)
 	{
 		for (std::uint32_t i = 0; i < this->script_strings.size(); i++)
@@ -420,7 +430,16 @@ namespace zonetool::iw7
 		// tags
 		for (auto i = 0; i < asset->numBones + asset->numClientBones; i++)
 		{
-			dump.dump_string(SL_ConvertToString(asset->boneNames[i]));
+			const char* bone_name = SL_ConvertToString(asset->boneNames[i]);
+			if (bone_name_remap && bone_name)
+			{
+				const auto entry = bone_name_remap->find(bone_name);
+				if (entry != bone_name_remap->end())
+				{
+					bone_name = entry->second.data();
+				}
+			}
+			dump.dump_string(bone_name);
 		}
 
 		// basic info

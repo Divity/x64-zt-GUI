@@ -1,8 +1,10 @@
 #include <std_include.hpp>
 #include "zonetool/t7/converter/iw7/include.hpp"
 #include "xmodel.hpp"
+#include "material.hpp"
 
 #include "zonetool/iw7/assets/xmodel.hpp"
+#include "zonetool/t7/converter/iw7/model_offset.hpp"
 
 #include <utils/string.hpp>
 
@@ -24,11 +26,17 @@ namespace zonetool::t7
 					assert(asset->numBones + asset->numCosmeticBones < 256);
 				}
 
-				COPY_VALUE(numLods);
-				if (new_asset->numLods > 6)
+				// T7 stores XModel meshes from the coarsest LOD to the most detailed,
+				// while IW7 expects lodInfo[0] to be the most detailed. Keep the six
+				// highest-detail T7 meshes and reverse them into IW7 order. Clamping
+				// before choosing the source index used to discard the best LODs on
+				// eight-LOD models and made the coarsest mesh render up close.
+				const auto source_lod_count = asset->numLods;
+				new_asset->numLods = static_cast<unsigned char>(std::min<unsigned int>(source_lod_count, 6));
+				auto source_lod_index = [source_lod_count](const unsigned int iw7_lod)
 				{
-					new_asset->numLods = 6;
-				}
+					return static_cast<unsigned int>(source_lod_count) - 1 - iw7_lod;
+				};
 
 				REINTERPRET_CAST_SAFE(name);
 
@@ -59,6 +67,22 @@ namespace zonetool::t7
 				}
 				REINTERPRET_CAST_SAFE(partClassification);
 				REINTERPRET_CAST_SAFE(baseMat);
+
+				// baseMat is world-space per bone. If the mesh was re-authored around
+				// j_gun then the bones have to follow it, or tags like tag_flash stay
+				// behind and the model reads as split.
+				const auto& offset = model_offset::get(asset->name ? asset->name : "");
+				if (offset.valid)
+				{
+					const auto bone_count = asset->numBones + asset->numCosmeticBones;
+					new_asset->baseMat = allocator.allocate_array<zonetool::iw7::DObjAnimMat>(bone_count);
+					for (auto i = 0; i < bone_count; i++)
+					{
+						memcpy(&new_asset->baseMat[i], &asset->baseMat[i], sizeof(zonetool::iw7::DObjAnimMat));
+						model_offset::apply_quat(offset, new_asset->baseMat[i].quat);
+						model_offset::apply_point(offset, new_asset->baseMat[i].trans);
+					}
+				}
 				new_asset->reactiveMotionParts = nullptr;
 				new_asset->reactiveMotionTweaks = nullptr;
 
@@ -69,20 +93,24 @@ namespace zonetool::t7
 
 				for (auto i = 0; i < new_asset->numLods; i++)
 				{
+					const auto source_index = source_lod_index(i);
+
 					// i made up this function, not sure how its calculated in bo3
 					auto calc_lod_dist = [&]()
 					{
 						float constantFactor = 1000000.0f;
+						// Preserve the converter's existing near-to-far distance schedule.
+						// The geometry order is reversed independently below.
 						return std::round(sqrtf(constantFactor / asset->averageTriArea[i]));
 					};
 
 					new_asset->lodInfo[i].dist = calc_lod_dist();
 
-					new_asset->lodInfo[i].numsurfs = asset->meshes[i]->numSurfs;
+					new_asset->lodInfo[i].numsurfs = asset->meshes[source_index]->numSurfs;
 					new_asset->lodInfo[i].surfIndex = 0;
 					new_asset->lodInfo[i].modelSurfs = allocator.allocate<zonetool::iw7::XModelSurfs>();
-					new_asset->lodInfo[i].modelSurfs->name = allocator.duplicate_string(asset->meshes[i]->name);
-					memcpy(&new_asset->lodInfo[i].partBits, &asset->meshes[i]->partBits, sizeof(float[8]));
+					new_asset->lodInfo[i].modelSurfs->name = allocator.duplicate_string(asset->meshes[source_index]->name);
+					memcpy(&new_asset->lodInfo[i].partBits, &asset->meshes[source_index]->partBits, sizeof(float[8]));
 				}
 
 				std::vector<Material*> materials;
@@ -91,7 +119,8 @@ namespace zonetool::t7
 
 				for (auto i = 0; i < new_asset->numLods; i++)
 				{
-					auto mesh_material = asset->meshMaterials[i];
+					const auto source_index = source_lod_index(i);
+					auto mesh_material = asset->meshMaterials[source_index];
 
 					for (auto j = 0; j < mesh_material.numMaterials; j++)
 					{
@@ -108,18 +137,33 @@ namespace zonetool::t7
 				new_asset->materialHandles = allocator.allocate_array<zonetool::iw7::Material*>(materials.size());
 				for (auto i = 0; i < materials.size(); i++)
 				{
-					new_asset->materialHandles[i] = reinterpret_cast<zonetool::iw7::Material*>(materials[i]);
+					// the material converter writes these under a flattened name, the model
+					// has to ask for the same one or the zone falls back to the default
+					const auto converted = material::get_converted_name(materials[i]);
+					const auto stub = allocator.allocate<zonetool::iw7::Material>();
+					stub->name = allocator.duplicate_string(converted);
+					new_asset->materialHandles[i] = stub;
 				}
 
 				new_asset->collLod = 0xFFui8;
 				if (asset->collLod)
 				{
+					bool collision_lod_retained = false;
 					for (char i = 0; i < new_asset->numLods; i++)
 					{
-						if (*asset->collLod == asset->meshes[i])
+						if (*asset->collLod == asset->meshes[source_lod_index(i)])
 						{
 							new_asset->collLod = i;
+							collision_lod_retained = true;
+							break;
 						}
+					}
+
+					// If an eight-LOD source used one of the two discarded coarse
+					// meshes for collision, use the coarsest retained mesh instead.
+					if (!collision_lod_retained && new_asset->numLods)
+					{
+						new_asset->collLod = new_asset->numLods - 1;
 					}
 				}
 
@@ -156,12 +200,12 @@ namespace zonetool::t7
 
 				new_asset->memUsage = 0;
 
-				if (asset->collmaps)
-				{
-					new_asset->physicsAsset = allocator.allocate<zonetool::iw7::PhysicsAsset>();
-					new_asset->physicsAsset->name = allocator.duplicate_string(asset->name);
-				}
-				
+				// t7 collmaps are not havok packfiles, so there is nothing to put in a
+				// PhysicsAsset. naming one anyway makes the zone carry an asset whose
+				// havokData is null, and the havok loader returns null for that and is
+				// dereferenced on the way back out
+				new_asset->physicsAsset = nullptr;
+
 				new_asset->hasLods = asset->numLods ? 1 : 0;
 				new_asset->shadowCutoffLod = 6;
 				new_asset->characterCollBoundsType = 1; // CharCollBoundsType_Human
@@ -176,7 +220,18 @@ namespace zonetool::t7
 			{
 				utils::memory::allocator allocator;
 				const auto converted_asset = convert(asset, allocator);
+
+				// bone names are script strings resolved inside the IW7 dumper, so a
+				// rename has to be applied there rather than on the converted asset
+				const auto& offset = model_offset::get(asset->name ? asset->name : "");
+				if (!offset.bones.empty())
+				{
+					zonetool::iw7::xmodel::set_bone_name_remap(&offset.bones);
+				}
+
 				zonetool::iw7::xmodel::dump(converted_asset);
+
+				zonetool::iw7::xmodel::set_bone_name_remap(nullptr);
 			}
 		}
 	}

@@ -436,6 +436,48 @@ namespace zonetool::iw7
 		reallocate_asset_pool(type, multiplier * new_size);
 	}
 
+	// iw7 ships 16 fx because it uses vfx for everything, and a converted t7 zone
+	// brings hundreds. these pools hand out slots from a freelist, so pointing
+	// g_assetPool at a bigger buffer the way reallocate_asset_pool does only moves
+	// the head variable - the list itself still walks the original slots. chain new
+	// ones onto the head instead, and do it when the pool actually runs dry so it
+	// cannot matter whether the engine has built its list yet
+	utils::hook::detour db_alloc_pool_entry_hook;
+
+	void grow_freelist_pool(const XAssetType type, const unsigned int count)
+	{
+		const auto element_size = DB_GetXAssetTypeSize(type);
+		auto* slots = static_cast<std::uint8_t*>(
+			utils::memory::get_allocator()->allocate(count * element_size));
+
+		auto** head = static_cast<void**>(g_assetPool[type]);
+		auto* next = *head;
+
+		for (auto i = count; i > 0; i--)
+		{
+			auto* slot = slots + (i - 1) * element_size;
+			*reinterpret_cast<void**>(slot) = next;
+			next = slot;
+		}
+
+		*head = next;
+		g_poolSize[type] += count;
+
+		ZONETOOL_INFO("Grew the \"%s\" pool to %i", g_assetNames[type], g_poolSize[type]);
+	}
+
+	void* db_alloc_pool_entry_stub(XAssetType type)
+	{
+		auto* entry = db_alloc_pool_entry_hook.invoke<void*>(type);
+		if (!entry && type == ASSET_TYPE_FX)
+		{
+			grow_freelist_pool(type, 512);
+			entry = db_alloc_pool_entry_hook.invoke<void*>(type);
+		}
+
+		return entry;
+	}
+
 	bool is_zone_loaded(const std::string& name)
 	{
 		if (DB_Zones_GetZoneIndexFromName(name.data()) != 0xFFFF)
@@ -901,6 +943,35 @@ namespace zonetool::iw7
 		//xanim_parts::secondary_anims.clear();
 	}
 
+	// where buildzone drops a copy of the finished zone, renamed to mod.ff
+	constexpr auto MOD_DEPLOY_DIR = "mods/AAE-v0.0.1";
+
+	void deploy_built_zone(const std::string& fastfile)
+	{
+		const auto built = fastfile + ".ff";
+
+		if (!utils::io::file_exists(built))
+		{
+			ZONETOOL_ERROR("Built zone \"%s\" not found, skipping deploy", built.data());
+			return;
+		}
+
+		try
+		{
+			std::filesystem::create_directories(MOD_DEPLOY_DIR);
+
+			const auto dest = std::string(MOD_DEPLOY_DIR) + "/mod.ff";
+			std::filesystem::copy_file(built, dest,
+				std::filesystem::copy_options::overwrite_existing);
+
+			ZONETOOL_INFO("Deployed \"%s\" -> \"%s\"", built.data(), dest.data());
+		}
+		catch (const std::exception& e)
+		{
+			ZONETOOL_ERROR("Could not deploy \"%s\": %s", built.data(), e.what());
+		}
+	}
+
 	void build_zone(const std::string& fastfile)
 	{
 		// make sure FS is correct.
@@ -948,6 +1019,10 @@ namespace zonetool::iw7
 		zone->build(buffer.get());
 
 		zonetool::taskbar::clear();
+
+		// deploy the built zone as mod.ff so it can be shipped under fs_game,
+		// which is the only mod file iw7-mod downloads to joining clients
+		deploy_built_zone(fastfile);
 
 		ignore_assets.clear();
 		clear_asset_fields();
@@ -1260,6 +1335,8 @@ namespace zonetool::iw7
 		reallocate_asset_pool_multiplier(ASSET_TYPE_VERTEXDECL, 6);
 		reallocate_asset_pool_multiplier(ASSET_TYPE_COMPUTESHADER, 4);
 		reallocate_asset_pool_multiplier(ASSET_TYPE_IMPACT_FX, 2);
+
+		db_alloc_pool_entry_hook.create(0x1403B6CE0, &db_alloc_pool_entry_stub);
 
 		// enable dumping
 		db_add_xasset_hook.create(0x140A76520, &db_add_xasset_stub);

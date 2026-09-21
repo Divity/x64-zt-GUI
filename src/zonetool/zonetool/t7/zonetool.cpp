@@ -2,6 +2,7 @@
 #include "zonetool.hpp"
 
 #include <utils/io.hpp>
+#include <utils/flags.hpp>
 
 #include "converter/converter.hpp"
 
@@ -20,19 +21,88 @@ namespace zonetool::t7
 	zonetool_globals_t globals{};
 	std::vector<std::pair<XAssetType, std::string>> referenced_assets;
 	std::unordered_set<XAssetType> asset_type_filter;
+	std::recursive_mutex dump_lock;
+
+	// last line of dump.log names the asset being dumped when we died
+	void dump_trace(const char* type, const char* name)
+	{
+		static FILE* trace_file = []() -> FILE*
+		{
+			FILE* fp = nullptr;
+			fopen_s(&fp, "dump.log", "w");
+			return fp;
+		}();
+
+		if (!trace_file)
+		{
+			return;
+		}
+
+		fprintf(trace_file, "%s %s", type, name);
+		fputc(10, trace_file);
+		fflush(trace_file);
+	}
 
 	std::unordered_set<std::pair<std::uint32_t, std::string>, pair_hash<std::uint32_t, std::string>> ignore_assets;
 
+	// Validate names read directly from zone memory.
+	const char* safe_asset_name(const char* name)
+	{
+		if (!name)
+		{
+			return "";
+		}
+
+		MEMORY_BASIC_INFORMATION mbi{};
+		if (!VirtualQuery(name, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT)
+		{
+			return "";
+		}
+
+		constexpr auto readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+			PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+
+		if ((mbi.Protect & readable) == 0 || (mbi.Protect & PAGE_GUARD) != 0)
+		{
+			return "";
+		}
+
+		const auto* end = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
+		for (const auto* it = name; it < end && (it - name) < 256; it++)
+		{
+			const auto c = static_cast<unsigned char>(*it);
+			if (!c)
+			{
+				return it > name ? name : "";
+			}
+
+			if (c < 0x20 || c > 0x7E)
+			{
+				return "";
+			}
+		}
+
+		return "";
+	}
+
 	const char* get_asset_name(XAssetType type, void* pointer)
 	{
-		XAssetHeader header{ .data = pointer };
-		XAsset asset{ type, header };
-		return DB_GetXAssetName(&asset);
+		if (!pointer)
+		{
+			return "";
+		}
+
+		if (type == ASSET_TYPE_IMAGE)
+		{
+			return safe_asset_name(reinterpret_cast<const GfxImage*>(pointer)->name);
+		}
+
+		return safe_asset_name(*reinterpret_cast<const char* const*>(pointer));
 	}
 
 	const char* get_asset_name(XAsset* asset)
 	{
-		return DB_GetXAssetName(asset);
+		return get_asset_name(asset->type, asset->header.data);
 	}
 
 	const char* type_to_string(XAssetType type)
@@ -184,6 +254,16 @@ namespace zonetool::t7
 			DUMP_ASSET_CONVERT(ASSET_TYPE_XANIMPARTS, xanim, XAnimParts);
 			DUMP_ASSET_CONVERT(ASSET_TYPE_XMODEL, xmodel, XModel);
 			DUMP_ASSET_CONVERT(ASSET_TYPE_XMODELMESH, xmodel_mesh, XModelMesh);
+			DUMP_ASSET_CONVERT(ASSET_TYPE_IMAGE, gfximage, GfxImage);
+			DUMP_ASSET_CONVERT(ASSET_TYPE_MATERIAL, material, Material);
+			DUMP_ASSET_CONVERT(ASSET_TYPE_FX, fxeffectdef, FxEffectDef);
+			// also emitted as vfx: iw7 weapons only consume FX_COMBINED_VFX, so the
+			// legacy .fxe cannot be referenced by one
+			DUMP_ASSET_CONVERT(ASSET_TYPE_FX, particlesystem, FxEffectDef);
+			if (asset->type == ASSET_TYPE_WEAPON)
+			{
+				converter::iw7::weapon::dump(asset->header.data, get_asset_name(asset));
+			}
 		}
 		catch (const std::exception& e)
 		{
@@ -229,6 +309,10 @@ namespace zonetool::t7
 
 	void dump_asset(XAsset* asset)
 	{
+		std::lock_guard<std::recursive_mutex> lock(dump_lock);
+
+		dump_trace(type_to_string(asset->type), get_asset_name(asset));
+
 		if (globals.verify)
 		{
 			ZONETOOL_INFO("Loading asset \"%s\" of type %s.", get_asset_name(asset), type_to_string(asset->type));
@@ -279,6 +363,7 @@ namespace zonetool::t7
 
 	void dump_refs()
 	{
+		dump_trace("phase", "dump_refs begin");
 		// remove duplicates
 		std::sort(referenced_assets.begin(), referenced_assets.end());
 		referenced_assets.erase(std::unique(referenced_assets.begin(),
@@ -293,21 +378,20 @@ namespace zonetool::t7
 
 			const auto asset_name = &asset.second[1];
 
-			if (asset.first == ASSET_TYPE_IMAGE)
-			{
-				ZONETOOL_WARNING("Not dumping referenced asset \"%s\" of type \"%s\"", asset_name, type_to_string(asset.first));
-				continue;
-			}
+			// DB_FindXAssetHeader synthesizes a default asset for anything that is not
+			// loaded, and building one is fatal here for several types, so only take
+			// assets that are genuinely resident
+			dump_trace("ref-lookup", asset_name);
+			const auto* entry = DB_FindXAssetEntry(asset.first, asset_name, false);
+			const auto asset_header = entry ? entry->asset.header : XAssetHeader{};
 
-			const auto& asset_header = db_find_x_asset_header_safe(asset.first, asset_name);
-
-			if (!asset_header.data || DB_IsXAssetDefault(asset.first, asset_name))
+			if (!asset_header.data)
 			{
 				ZONETOOL_ERROR("Could not find referenced asset \"%s\" of type \"%s\"", asset_name, type_to_string(asset.first));
 				continue;
 			}
 
-			//ZONETOOL_INFO("Dumping additional asset \"%s\" of type \"%s\"", asset_name, type_to_string(asset.first));
+			ZONETOOL_INFO("Dumping additional asset \"%s\" of type \"%s\"", asset_name, type_to_string(asset.first));
 
 			XAsset referenced_asset =
 			{
@@ -318,11 +402,15 @@ namespace zonetool::t7
 			dump_asset(&referenced_asset);
 		}
 
+		dump_trace("phase", "dump_refs end");
 		referenced_assets.clear();
 	}
 
 	void stop_dumping()
 	{
+		std::lock_guard<std::recursive_mutex> lock(dump_lock);
+
+		dump_trace("phase", "stop_dumping");
 		globals.verify = false;
 
 		if (globals.dump_csv)
@@ -343,6 +431,7 @@ namespace zonetool::t7
 
 		globals.dump = false;
 
+		dump_trace("phase", "clearing xpak cache");
 		xpak::clear_cache();
 	
 		zonetool::taskbar::clear();
@@ -359,6 +448,15 @@ namespace zonetool::t7
 
 		dump_asset(&xasset);
 
+		const auto* name = get_asset_name(&xasset);
+		if (name[0] == ',')
+		{
+			const auto* entry = DB_FindXAssetEntry(type, name + 1, false);
+			return entry ? entry->asset.header : header;
+		}
+
+		// the engine must not take ownership of images here, letting DB_AddXAsset
+		// run for them crashes the zone load
 		if (type == ASSET_TYPE_IMAGE)
 		{
 			return header;
@@ -660,13 +758,66 @@ namespace zonetool::t7
 
 		::t7::command::add("dumpasset", [](const ::t7::command::params& params)
 		{
-			const auto type = XAssetType(type_to_int(params.get(1)));
-			const auto name = params.get(2);
+			if (params.size() < 3)
+			{
+				ZONETOOL_ERROR("usage: dumpasset [target] <type> <name>");
+				return;
+			}
+
+			auto target = game::t7;
+			auto arg = 1;
+
+			if (params.size() >= 4)
+			{
+				const auto mode = params.get(1);
+				target = game::get_mode_from_string(mode);
+
+				if (target == game::none)
+				{
+					ZONETOOL_ERROR("Invalid dump target \"%s\"", mode);
+					return;
+				}
+
+				if (!dump_functions.contains(target))
+				{
+					ZONETOOL_ERROR("Unsupported dump target \"%s\" (%i)", mode, target);
+					return;
+				}
+
+				arg = 2;
+			}
+
+			const auto type_str = params.get(arg);
+			const auto type_int = type_to_int(type_str);
+			if (type_int == -1)
+			{
+				ZONETOOL_ERROR("Asset type \"%s\" does not exist", type_str);
+				return;
+			}
+
+			asset_type_filter.clear();
+
+			const auto type = XAssetType(type_int);
+			const auto name = params.get(arg + 1);
 
 			XAsset asset{};
 			asset.type = type;
 
-			const auto header = db_find_x_asset_header(type, name);
+			XAssetHeader header{};
+
+			if (type == ASSET_TYPE_IMAGE)
+			{
+				// avoid the default-asset path, it is fatal for images
+				const auto* entry = DB_FindXAssetEntry(type, name, false);
+				if (entry)
+				{
+					header = entry->asset.header;
+				}
+			}
+			else
+			{
+				header = db_find_x_asset_header(type, name);
+			}
 			if (!header.data)
 			{
 				ZONETOOL_INFO("Asset not found\n");
@@ -681,7 +832,7 @@ namespace zonetool::t7
 
 			filesystem::set_fastfile("assets");
 			asset.header = header;
-			globals.target_game = game::t7;
+			globals.target_game = target;
 			dump_asset(&asset);
 
 			ZONETOOL_INFO("Dumped to dump/assets");
@@ -697,6 +848,117 @@ namespace zonetool::t7
 
 			dump_csv(params.get(1));
 		});
+
+		::t7::command::add("dumpassets", [](const ::t7::command::params& params)
+		{
+			if (params.size() < 3)
+			{
+				ZONETOOL_ERROR("usage: dumpassets <target> <type> [substring]");
+				return;
+			}
+
+			const auto mode = params.get(1);
+			const auto target = game::get_mode_from_string(mode);
+			if (target == game::none || !dump_functions.contains(target))
+			{
+				ZONETOOL_ERROR("Invalid dump target \"%s\"", mode);
+				return;
+			}
+
+			const auto type_str = params.get(2);
+			const auto type_int = type_to_int(type_str);
+			if (type_int == -1)
+			{
+				ZONETOOL_ERROR("Asset type \"%s\" does not exist", type_str);
+				return;
+			}
+
+			const auto type = XAssetType(type_int);
+			const std::string filter = params.size() >= 4 ? params.get(3) : "";
+
+			asset_type_filter.clear();
+			asset_type_filter.insert(type);
+
+			globals.target_game = target;
+			globals.dump = true;
+			const auto _0 = gsl::finally([]
+			{
+				globals.dump = false;
+			});
+
+			filesystem::set_fastfile("assets");
+
+			auto count = 0;
+			for (auto bucket = 0u; bucket < ASSET_HASH_BUCKET_COUNT; bucket++)
+			{
+				for (auto index = g_assetHashTable[bucket]; index; index = g_assetEntries[index].nextHash)
+				{
+					auto& entry = g_assetEntries[index];
+					if (entry.unloaded || entry.asset.type != type)
+					{
+						continue;
+					}
+
+					const std::string name = get_asset_name(&entry.asset);
+					if (name.empty() || (!filter.empty() && name.find(filter) == std::string::npos))
+					{
+						continue;
+					}
+
+					XAsset asset = entry.asset;
+					dump_asset(&asset);
+					count++;
+				}
+			}
+
+			ZONETOOL_INFO("Dumped %i assets of type \"%s\" to dump/assets", count,
+				type_to_string(type));
+		});
+
+		::t7::command::add("listassets", [](const ::t7::command::params& params)
+		{
+			if (params.size() < 2)
+			{
+				ZONETOOL_ERROR("usage: listassets <type> [substring]");
+				return;
+			}
+
+			const auto type_int = type_to_int(params.get(1));
+			if (type_int == -1)
+			{
+				ZONETOOL_ERROR("Asset type \"%s\" does not exist", params.get(1));
+				return;
+			}
+
+			const auto type = XAssetType(type_int);
+			const std::string filter = params.size() >= 3 ? params.get(2) : "";
+
+			auto count = 0;
+
+			for (auto bucket = 0u; bucket < ASSET_HASH_BUCKET_COUNT; bucket++)
+			{
+				for (auto index = g_assetHashTable[bucket]; index; index = g_assetEntries[index].nextHash)
+				{
+					auto& entry = g_assetEntries[index];
+					if (entry.unloaded || entry.asset.type != type)
+					{
+						continue;
+					}
+
+					const std::string name = get_asset_name(&entry.asset);
+					if (!filter.empty() && name.find(filter) == std::string::npos)
+					{
+						continue;
+					}
+
+					ZONETOOL_INFO("%s (zone %u)", name.data(), entry.zoneIndex);
+					count++;
+				}
+			}
+
+			ZONETOOL_INFO("Found %i assets of type \"%s\"", count, type_to_string(type));
+		});
+
 
 		::t7::command::add("verifyzone", [](const ::t7::command::params& params)
 		{
@@ -758,8 +1020,23 @@ namespace zonetool::t7
 					}
 					else if (args[i] == "-dumpzone")
 					{
-						dump_zone(args[i + 1], game::t7);
-						i++;
+						// -dumpzone [target] <zone>, target defaults to t7 so the
+						// existing single-argument form keeps working
+						auto target = game::t7;
+						auto zone_index = i + 1;
+
+						if (i + 2 < args.size())
+						{
+							const auto maybe_target = game::get_mode_from_string(args[i + 1]);
+							if (maybe_target != game::none && dump_functions.contains(maybe_target))
+							{
+								target = maybe_target;
+								zone_index = i + 2;
+							}
+						}
+
+						dump_zone(args[zone_index], target);
+						i = zone_index;
 					}
 				}
 			}
@@ -814,7 +1091,6 @@ namespace zonetool::t7
 		static bool initialized = false;
 		if (initialized) return;
 		initialized = true;
-
 		ZONETOOL_INFO("ZoneTool is initializing...");
 
 		// reallocs
