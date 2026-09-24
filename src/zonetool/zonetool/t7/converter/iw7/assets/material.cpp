@@ -13,8 +13,6 @@ namespace zonetool::t7
 		{
 			namespace
 			{
-				// slots are declared in ascending type hash order, stock iw7 materials
-				// always write their texture table that way
 				enum map_type
 				{
 					MAP_SPECULAR,
@@ -42,8 +40,6 @@ namespace zonetool::t7
 					{ 2771134132, 's', 'p', 9, "$white", { "o", "ao", nullptr } },
 				};
 
-				// referenced materials can carry image pointers whose name field is a
-				// non-null pointer into unmapped memory, which faults inside strlen
 				bool is_readable(const void* ptr)
 				{
 					MEMORY_BASIC_INFORMATION mbi{};
@@ -79,8 +75,6 @@ namespace zonetool::t7
 						return nullptr;
 					}
 
-					// the bytes have to be a printable, terminated string as well, json
-					// refuses to serialize anything that is not valid utf-8
 					const auto* end = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
 					for (const auto* it = name; it < end && (it - name) < 256; it++)
 					{
@@ -138,8 +132,6 @@ namespace zonetool::t7
 					return -1;
 				}
 
-				// maps t7 keeps but none of the techniques below sample, they still name
-				// the set they belong to
 				const char* const unused_suffixes[] = { "e", "r", "t", "ir", "mask", "a" };
 
 				bool is_map_suffix(const std::string& suffix)
@@ -160,8 +152,6 @@ namespace zonetool::t7
 					return false;
 				}
 
-				// t7 splits every map into its own image and names them by suffix, so the
-				// rest of the set can be recovered from whichever one the material holds
 				std::string get_base_name(const std::string& name)
 				{
 					const auto suffix = get_suffix(name);
@@ -208,10 +198,6 @@ namespace zonetool::t7
 					return false;
 				}
 
-				// t7 weapon/character glow surfaces use a lit_emissive* techset and carry
-				// an emissiveMap (_e). the plain lit path renders that map as a normally-lit
-				// diffuse, so it barely shows; route it to an unlit ("effectunlit") technique
-				// that self-illuminates instead.
 				bool is_emissive_material(const Material* asset)
 				{
 					if (asset->techniqueSet && is_readable(asset->techniqueSet))
@@ -327,10 +313,6 @@ namespace zonetool::t7
 
 				void collect_maps(const Material* asset, std::string* maps)
 				{
-					// effect textures (spark/fog/etc.) carry names the suffix/hash classifier
-					// does not recognise, so nothing lands in maps and the material ends up
-					// with a $black color map (invisible under additive).  keep the first real
-					// image as a last-resort color map so those effects still show
 					std::string first_image;
 
 					for (auto i = 0; asset->textureTable && i < asset->textureCount; i++)
@@ -364,9 +346,6 @@ namespace zonetool::t7
 						}
 					}
 
-					// the zone never links the image pointers of a converted material so
-					// every slot resolves to the same image, drop the copies and rebuild
-					// the set from the name of whichever one survived
 					for (auto i = 0; i < MAP_COUNT; i++)
 					{
 						for (auto j = i + 1; j < MAP_COUNT; j++)
@@ -389,8 +368,6 @@ namespace zonetool::t7
 
 					if (base.empty())
 					{
-						// no classifiable maps, but an unrecognised effect texture is still
-						// far better than $black - use it as the color map
 						if (!first_image.empty())
 						{
 							maps[MAP_COLOR] = first_image;
@@ -398,8 +375,6 @@ namespace zonetool::t7
 						return;
 					}
 
-					// whatever the material pointed at is still worth more than a blank map
-					// if the set turns out not to hold the one this slot wants
 					std::string fallback;
 					for (auto i = 0; i < MAP_COUNT && fallback.empty(); i++)
 					{
@@ -441,10 +416,6 @@ namespace zonetool::t7
 					return {};
 				}
 
-				// Particle materials can use an emissive technique too.  They still need an
-				// effect vertex/render path; routing them through the mo/ model-emissive path
-				// produces invisible $black sprites.  Effect identity therefore wins over
-				// emissive identity.  Keep this precedence identical to dump().
 				if (is_effect_material(name, asset))
 				{
 					return "el/"s + get_material_name(name);
@@ -467,20 +438,11 @@ namespace zonetool::t7
 
 				const auto effect = is_effect_material(asset->name, asset);
 
-				// emissive (self-illuminated) glow surfaces get their own unlit technique;
-				// mirrors the working mtl_t7_raygun_meter setup.  Do not send particle
-				// materials down this model-only path merely because their source technique
-				// is emissive.
 				if (!effect && is_emissive_material(asset))
 				{
 					const std::string techset = "mo_effectunlit_replace_lin_ct_nocast_mkhdr";
 					const auto name = "mo/"s + get_material_name(asset->name);
 
-					// BO3 lit-emissive weapon materials often carry a white intensity
-					// mask in _e and their actual authored colour in _c. Using _e as the
-					// IW7 unlit color map turns the entire surface white. Prefer the
-					// reconstructed albedo and use the emissive map only when no colour
-					// map exists (the latter remains correct for true glow-only surfaces).
 					std::string maps[MAP_COUNT];
 					collect_maps(asset, maps);
 					auto emissive_map = maps[MAP_COLOR];
@@ -500,10 +462,6 @@ namespace zonetool::t7
 					matdata["textureAtlasFrameBlend"] = 0;
 					matdata["textureAtlasAsArray"] = 0;
 					matdata["surfaceTypeBits"] = 0;
-					// effect surfaces use stateFlags 16 (matches the working raygun power-core
-					// emissive and the converter's own effect path). 56 carries the opaque-lit
-					// depth bits (0x08|0x20), which make the glow phase against the body depth
-					// as the viewmodel bobs.
 					matdata["stateFlags"] = 16;
 					matdata["cameraRegion"] = 4;
 					matdata["materialType"] = 23;
@@ -573,8 +531,6 @@ namespace zonetool::t7
 				}
 				else
 				{
-					// the technique name lists the maps the shader samples, so the table
-					// has to carry an entry for every one of them
 					emit[MAP_NORMAL] = true;
 					emit[MAP_COLOR] = true;
 
@@ -585,8 +541,6 @@ namespace zonetool::t7
 						emit[MAP_SPECULAR] = true;
 						emit[MAP_OCCLUSION] = true;
 					}
-					// i0c0s0n0 only ships in techset zones zombies never loads, so the
-					// occlusion variant is used instead with an unoccluded placeholder
 					else if (!maps[MAP_SPECULAR].empty() && !maps[MAP_NORMAL].empty())
 					{
 						techset_name = "mo_l_sm_replace_i0c0s0o0n0";

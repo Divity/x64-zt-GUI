@@ -3177,6 +3177,13 @@ namespace zonetool::iw7
 			const auto path = create_path(bank, streamed);
 			if (utils::io::file_exists(path))
 			{
+				if (const auto* keep_existing = std::getenv("ZT_KEEP_EXISTING_SOUND_BANKS");
+					keep_existing && keep_existing[0] == '1')
+				{
+					ZONETOOL_INFO("Using existing sound asset bank %s", path.data());
+					return;
+				}
+
 				if (path.find(filesystem::get_fastfile()) == std::string::npos)
 				{
 					const int result = MessageBoxA(NULL, utils::string::va("You are about to overwrite file %s\nAre you sure?", path.data()), "WARNING", MB_YESNOCANCEL);

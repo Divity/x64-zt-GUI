@@ -3,18 +3,14 @@
 
 namespace zonetool::iw7
 {
-	class xmodel : public asset_interface
+	class behavior_tree : public asset_interface
 	{
 	private:
 		std::string name_;
-		XModel* asset_ = nullptr;
-
-		std::vector<std::pair<scr_string_t*, const char*>> script_strings;
-		void add_script_string(scr_string_t* ptr, const char* str);
-		const char* get_script_string(scr_string_t* ptr);
+		BehaviorTree* asset_ = nullptr;
 
 	public:
-		XModel* parse(std::string name, zone_memory* mem);
+		BehaviorTree* parse(const std::string& name, zone_memory* mem);
 
 		void init(const std::string& name, zone_memory* mem) override;
 		void prepare(zone_buffer* buf, zone_memory* mem) override;
@@ -26,9 +22,6 @@ namespace zonetool::iw7
 		std::int32_t type() override;
 		void write(zone_base* zone, zone_buffer* buffer) override;
 
-		static void dump(XModel* asset);
-
-		using bone_name_remap_t = std::unordered_map<std::string, std::string>;
-		static void set_bone_name_remap(const bone_name_remap_t* remap);
+		static void dump(BehaviorTree* asset);
 	};
 }

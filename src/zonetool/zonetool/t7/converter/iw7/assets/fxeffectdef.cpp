@@ -12,8 +12,6 @@ namespace zonetool::t7
 		{
 			namespace
 			{
-				// referenced assets keep non null pointers into memory that is no longer
-				// mapped, so nothing here is dereferenced without checking it first
 				bool is_readable(const void* ptr, std::size_t size)
 				{
 					if (!ptr)
@@ -67,7 +65,6 @@ namespace zonetool::t7
 					return nullptr;
 				}
 
-				// every asset in both games keeps its name in the first field
 				const char* asset_name(const void* asset)
 				{
 					if (!is_readable(asset, sizeof(void*)))
@@ -79,8 +76,6 @@ namespace zonetool::t7
 				}
 
 
-				// t7 element types line up with iw7 for everything the zombie effects
-				// use, these are the ones the iw7 dumper branches on
 				enum elem_type
 				{
 					ELEM_TYPE_MODEL = 9,
@@ -89,8 +84,6 @@ namespace zonetool::t7
 					ELEM_TYPE_RUNNER = 14,
 				};
 
-				// materials are dumped under a flattened name, the effect has to ask for
-				// them the same way the material converter writes them
 				const char* convert_material_name(const char* name, utils::memory::allocator& allocator)
 				{
 					std::string clean = name;
@@ -132,8 +125,6 @@ namespace zonetool::t7
 						return nullptr;
 					}
 
-					// every asset in both games keeps its name first, so the effect only
-					// needs a stand in carrying the converted name
 					const auto stub = allocator.allocate<T>();
 					stub->name = name;
 
@@ -209,9 +200,6 @@ namespace zonetool::t7
 					new_def.velIntervalCount = def->velIntervalCount;
 					new_def.visStateIntervalCount = def->visStateIntervalCount;
 
-					// the sample structs are only forward declared upstream so iw7's are used,
-					// which means the source has to be checked for the size iw7 will read back
-					// out of it, and an element that cannot supply them gets a blank one
 					const auto vel_count = def->velIntervalCount + 1;
 					if (is_readable(def->velSamples, sizeof(zonetool::iw7::FxElemVelStateSample) * vel_count))
 					{
@@ -234,8 +222,6 @@ namespace zonetool::t7
 						new_def.visSamples = allocator.allocate_array<zonetool::iw7::FxElemVisStateSample>(1);
 					}
 
-					// t7 stores the collision box as its corners, iw7 as a centre and a
-					// half size
 					for (auto i = 0; i < 3; i++)
 					{
 						new_def.collBounds.midPoint[i] = (def->collMins[i] + def->collMaxs[i]) * 0.5f;
@@ -290,16 +276,10 @@ namespace zonetool::t7
 					}
 					else
 					{
-						// the iw7 dumper only writes the visuals array when the union pointer is
-						// set, but its reader always expects one when visualCount is above 1, so
-						// falling back to a single instance has to drop the count with it
 						new_def.visualCount = 1;
 						convert_visuals(def, &def->visuals.instance, &new_def.visuals.instance, allocator);
 					}
 
-					// the extended data is laid out differently per element type and is
-					// not converted, dropping it leaves the element without its trail or
-					// light rather than writing something wrong
 					new_def.extended.unknownDef = nullptr;
 
 					return new_def;
@@ -311,9 +291,6 @@ namespace zonetool::t7
 				const auto new_asset = allocator.allocate<zonetool::iw7::FxEffectDef>();
 
 				new_asset->name = safe_name(asset->name);
-
-				// samples belong to the source asset and are written straight out
-				// of it, so they have to be present before they are handed over
 
 				COPY_VALUE(flags);
 				COPY_VALUE(totalSize);
@@ -329,15 +306,12 @@ namespace zonetool::t7
 				new_asset->elemDefCountOneShot = asset->elemDefCountOneShot;
 				new_asset->elemDefCountEmission = asset->elemDefCountEmission;
 
-				// iw7 keeps a radius where t7 keeps the box it came from
 				new_asset->elemMaxRadius = std::max({ asset->boundingBoxDim[0],
 					asset->boundingBoxDim[1], asset->boundingBoxDim[2] }) * 0.5f;
 
 				const auto count = new_asset->elemDefCountLooping + new_asset->elemDefCountOneShot +
 					new_asset->elemDefCountEmission;
 
-				// the iw7 dumper walks the counts, not the array, so dropping the elements
-				// without clearing them walks a null pointer
 				if (count <= 0 || !is_readable(asset->elemDefs, sizeof(FxElemDef)))
 				{
 					new_asset->elemDefs = nullptr;
@@ -347,8 +321,6 @@ namespace zonetool::t7
 					return new_asset;
 				}
 
-				// a big element array can straddle more than one committed region, so each
-				// one is checked on its own and whatever is present gets converted
 				new_asset->elemDefs = allocator.allocate_array<zonetool::iw7::FxElemDef>(count);
 
 				auto converted = 0;
@@ -367,7 +339,6 @@ namespace zonetool::t7
 					ZONETOOL_WARNING("fx \"%s\" only had %i of its %i elements loaded",
 						new_asset->name, converted, count);
 
-					// the three counts are consecutive runs of the same array, trim from the end
 					auto left = converted;
 					new_asset->elemDefCountLooping = std::min(new_asset->elemDefCountLooping, left);
 					left -= new_asset->elemDefCountLooping;

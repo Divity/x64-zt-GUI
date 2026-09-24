@@ -1502,8 +1502,6 @@ namespace zonetool::t7
 		vec3_t rot;
 	};
 
-	// fx structs come from boiii-free src/client/game/structs/db/xasset/core.hpp,
-	// where they carry size assertions, so the layout below is checked not guessed
 	struct FxFloatRange
 	{
 		float base;
@@ -1606,7 +1604,7 @@ namespace zonetool::t7
 		FxFloatRange spawnOrigin[3];
 		FxFloatRange spawnOffsetRadius;
 		FxFloatRange spawnOffsetHeight;
-		byte spawnOffsetAxis; // absent from boiii-free; everything below was 4 bytes early
+		byte spawnOffsetAxis;
 		byte pad_6d[3];
 		FxFloatRange spawnAngles[3];
 		FxFloatRange angularVelocity[3];
@@ -1679,9 +1677,6 @@ namespace zonetool::t7
 	static_assert(sizeof(FxElemDef) == 0x260);
 	static_assert(sizeof(FxSpawnDef) == 0x10);
 	static_assert(offsetof(FxElemDef, spawn) + offsetof(FxSpawnDefLooping, spawnCount) == 0x10);
-	// the size assert alone cannot pin these - a missing spawnOffsetAxis shifted
-	// everything from spawnAngles to visStateIntervalCount 4 bytes early while the
-	// total still came to 0x260, so elemType was read out of windInfluence's low byte
 	static_assert(offsetof(FxElemDef, spawnOffsetAxis) == 0x6C);
 	static_assert(offsetof(FxElemDef, spawnOffsetRadius) == 0x5C);
 	static_assert(offsetof(FxElemDef, spawnOffsetHeight) == 0x64);

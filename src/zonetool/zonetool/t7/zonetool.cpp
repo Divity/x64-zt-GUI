@@ -23,7 +23,6 @@ namespace zonetool::t7
 	std::unordered_set<XAssetType> asset_type_filter;
 	std::recursive_mutex dump_lock;
 
-	// last line of dump.log names the asset being dumped when we died
 	void dump_trace(const char* type, const char* name)
 	{
 		static FILE* trace_file = []() -> FILE*
@@ -45,7 +44,6 @@ namespace zonetool::t7
 
 	std::unordered_set<std::pair<std::uint32_t, std::string>, pair_hash<std::uint32_t, std::string>> ignore_assets;
 
-	// Validate names read directly from zone memory.
 	const char* safe_asset_name(const char* name)
 	{
 		if (!name)
@@ -257,8 +255,6 @@ namespace zonetool::t7
 			DUMP_ASSET_CONVERT(ASSET_TYPE_IMAGE, gfximage, GfxImage);
 			DUMP_ASSET_CONVERT(ASSET_TYPE_MATERIAL, material, Material);
 			DUMP_ASSET_CONVERT(ASSET_TYPE_FX, fxeffectdef, FxEffectDef);
-			// also emitted as vfx: iw7 weapons only consume FX_COMBINED_VFX, so the
-			// legacy .fxe cannot be referenced by one
 			DUMP_ASSET_CONVERT(ASSET_TYPE_FX, particlesystem, FxEffectDef);
 			if (asset->type == ASSET_TYPE_WEAPON)
 			{
@@ -378,9 +374,6 @@ namespace zonetool::t7
 
 			const auto asset_name = &asset.second[1];
 
-			// DB_FindXAssetHeader synthesizes a default asset for anything that is not
-			// loaded, and building one is fatal here for several types, so only take
-			// assets that are genuinely resident
 			dump_trace("ref-lookup", asset_name);
 			const auto* entry = DB_FindXAssetEntry(asset.first, asset_name, false);
 			const auto asset_header = entry ? entry->asset.header : XAssetHeader{};
@@ -455,8 +448,6 @@ namespace zonetool::t7
 			return entry ? entry->asset.header : header;
 		}
 
-		// the engine must not take ownership of images here, letting DB_AddXAsset
-		// run for them crashes the zone load
 		if (type == ASSET_TYPE_IMAGE)
 		{
 			return header;
@@ -807,7 +798,6 @@ namespace zonetool::t7
 
 			if (type == ASSET_TYPE_IMAGE)
 			{
-				// avoid the default-asset path, it is fatal for images
 				const auto* entry = DB_FindXAssetEntry(type, name, false);
 				if (entry)
 				{
@@ -1020,8 +1010,6 @@ namespace zonetool::t7
 					}
 					else if (args[i] == "-dumpzone")
 					{
-						// -dumpzone [target] <zone>, target defaults to t7 so the
-						// existing single-argument form keeps working
 						auto target = game::t7;
 						auto zone_index = i + 1;
 

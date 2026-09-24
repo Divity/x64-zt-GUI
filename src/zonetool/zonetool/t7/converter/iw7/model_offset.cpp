@@ -51,7 +51,6 @@ namespace zonetool::t7
 						{
 							offset_t off{};
 
-							// a model may need only a rename, only a transform, or both
 							if (value.contains("quat") && value.contains("trans"))
 							{
 								const auto& q = value["quat"];
@@ -129,7 +128,6 @@ namespace zonetool::t7
 			{
 				if (!off.valid) return;
 
-				// rebuild the bone's rotation as off.rot * bone_rot, via matrices
 				float b[3][3];
 				quat_to_mat(quat, b);
 

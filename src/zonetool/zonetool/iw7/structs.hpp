@@ -6004,9 +6004,28 @@ namespace zonetool::iw7
 		ANIMCTRL_NUM = 0x3,
 	};
 
+	assert_sizeof(AnimationEntry, 8);
+	assert_sizeof(AnimAliasInfo, 8);
+	assert_sizeof(AnimAlias, 16);
+	assert_sizeof(AnimationState, 48);
+	assert_offsetof(AnimationState, entryCount, 17);
+	assert_offsetof(AnimationState, aliasCount, 18);
+	assert_offsetof(AnimationState, animEntries, 24);
+	assert_offsetof(AnimationState, animIndices, 32);
+	assert_offsetof(AnimationState, aliasList, 40);
+	assert_sizeof(AnimationAimSet, 48);
+	assert_offsetof(AnimationAimSet, animName, 16);
+	assert_offsetof(AnimationAimSet, animIndices, 32);
+	assert_offsetof(AnimationAimSet, aimNodeIndices, 40);
+	assert_sizeof(AnimationStateMachine, 24);
+
 	struct AnimationClass
 	{
-		const char* className;
+		union
+		{
+			const char* className;
+			const char* name;
+		};
 		AnimationStateMachine* stateMachine;
 		AnimationController animCtrl;
 		scr_string_t animTree;
@@ -6020,6 +6039,15 @@ namespace zonetool::iw7
 		FxCombinedDef* effectDefs;
 		scr_string_t* effectTags;
 	}; assert_sizeof(AnimationClass, 0x58);
+	assert_offsetof(AnimationClass, animTree, 20);
+	assert_offsetof(AnimationClass, scriptable, 24);
+	assert_offsetof(AnimationClass, soundCount, 32);
+	assert_offsetof(AnimationClass, effectCount, 34);
+	assert_offsetof(AnimationClass, soundNotes, 40);
+	assert_offsetof(AnimationClass, effectDefs, 72);
+	assert_offsetof(AnimationClass, effectTags, 80);
+	assert_sizeof(FxCombinedDef, 16);
+
 
 	struct PlayerAnimEntry
 	{
@@ -12014,8 +12042,7 @@ namespace zonetool::iw7
 		SuitAnimPackage* animPackageR;
 		SuitAnimPackage* animPackageRelaxed;
 		SuitAnimPackage* animPackageSafe;
-		char facialAnimType;
-		SuitBodyAnimType bodyAnimType;
+		SuitAnimPackage* animPackageUnk;
 		ScriptableDef* scriptableDef;
 		int viewheight_stand;
 		int viewheight_crouch;
@@ -12077,6 +12104,11 @@ namespace zonetool::iw7
 		float footstep_shakeAmplitude;
 		RumbleInfo* footstep_rumble;
 	}; assert_sizeof(SuitDef, 0x2C0);
+	assert_offsetof(SuitDef, doubleJump_sound, 160);
+	assert_offsetof(SuitDef, animPackage, 304);
+	assert_offsetof(SuitDef, scriptableDef, 352);
+	assert_offsetof(SuitDef, groundPound_activationRumble, 600);
+	assert_offsetof(SuitDef, footstep_rumble, 696);
 
 	struct SuitAnimEntry
 	{
@@ -12462,6 +12494,8 @@ namespace zonetool::iw7
 		unsigned short nodeCount;
 		BehaviorTreeNode* nodes;
 	}; assert_sizeof(BehaviorTree, 0x18);
+	assert_offsetof(BehaviorTree, nodeCount, 8);
+	assert_offsetof(BehaviorTree, nodes, 16);
 
 	struct XAnimArcheType;
 

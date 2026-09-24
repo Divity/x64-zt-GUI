@@ -143,7 +143,7 @@ namespace zonetool::t7
 							written += copy_size;
 							break;
 						}
-						default: // oodle, unused by t7
+						default:
 						{
 							return {};
 						}

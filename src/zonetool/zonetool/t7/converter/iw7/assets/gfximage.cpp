@@ -76,8 +76,6 @@ namespace zonetool::t7
 					return found;
 				}
 
-				// pull the largest available pixel data (streamed / packed / fallback)
-				// out of a t7 GfxImage, along with its dimensions and (linear) format
 				bool extract_source(GfxImage* asset, std::vector<std::uint8_t>& pixels,
 					std::size_t& width, std::size_t& height, DXGI_FORMAT& format)
 				{
@@ -122,7 +120,6 @@ namespace zonetool::t7
 					return true;
 				}
 
-				// decode any t7 image to a linear R8G8B8A8 scratch image
 				bool load_rgba(GfxImage* asset, DirectX::ScratchImage& out)
 				{
 					std::vector<std::uint8_t> pixels;
@@ -185,11 +182,6 @@ namespace zonetool::t7
 						DirectX::DDS_FLAGS_NONE, wpath.data()));
 				}
 
-				// iw7's "spec/gloss" slot reads specular from rgb and GLOSS FROM ALPHA.
-				// t7 splits them into a _s (spec, no alpha) and a _g (gloss) map, so a
-				// straight copy leaves alpha = 1.0 and the surface renders mirror-shiny.
-				// when we dump a _s map and its _g sibling exists, fold the gloss into
-				// the alpha channel and write an rgba map instead.
 				bool try_pack_spec_gloss(GfxImage* asset)
 				{
 					const std::string name = asset->name;
@@ -222,10 +214,6 @@ namespace zonetool::t7
 					auto* s = s_scratch.GetImage(0, 0, 0);
 					const auto* g = g_scratch.GetImage(0, 0, 0);
 
-					// nearest-neighbor sample the gloss map into the spec map's alpha. done
-					// by hand rather than DirectX::Resize because Resize needs WIC, which the
-					// dump process never initializes; this also handles the common case where
-					// the gloss map is a lower resolution than the spec map.
 					for (std::size_t y = 0; y < s->height; y++)
 					{
 						auto* srow = s->pixels + y * s->rowPitch;
@@ -234,7 +222,7 @@ namespace zonetool::t7
 						for (std::size_t x = 0; x < s->width; x++)
 						{
 							const auto gx = (g->width == s->width) ? x : (x * g->width / s->width);
-							srow[x * 4 + 3] = grow[gx * 4 + 0]; // alpha = gloss (red)
+							srow[x * 4 + 3] = grow[gx * 4 + 0];
 						}
 					}
 
@@ -255,7 +243,6 @@ namespace zonetool::t7
 					return;
 				}
 
-				// spec+gloss packing for weapon/character maps; falls through on any miss
 				if (try_pack_spec_gloss(asset))
 				{
 					return;

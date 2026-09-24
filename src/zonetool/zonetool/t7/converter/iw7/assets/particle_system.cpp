@@ -6,19 +6,6 @@
 #include "zonetool/t7/functions.hpp"
 #include "zonetool/iw7/assets/particle_system.hpp"
 
-// t7 fx are element based, iw7 vfx are a module graph.  iw7 weapons only consume
-// vfx - every shipped vfx package slot uses FX_COMBINED_VFX and none use the legacy
-// FxEffectDef path - so a converted .fxe cannot be referenced by a weapon and has to
-// become a ParticleSystemDef instead.
-//
-// the element -> module mapping below is ported from the proven IW5 -> IW7 converter
-// in Joelrau/zonetool (src/IW5/Converter/IW7/Assets/ParticleSystem.cpp, based on
-// xoxor4d's curve research), with the source side changed from IW5's FxElemDef to
-// t7's.  each t7 FxElemDef becomes one ParticleEmitterDef carrying a single state,
-// and the element's fields are spread across that state's INIT/UPDATE/TEST module
-// groups.  the built struct is handed to iw7's own writer rather than emitting
-// .iw7VFX here.
-
 namespace zonetool::t7
 {
 	namespace converter::iw7
@@ -29,15 +16,6 @@ namespace zonetool::t7
 			{
 				namespace i7 = zonetool::iw7;
 
-				// ---- t7 sample layouts -------------------------------------------------
-				// t7 grew the shared cod fx sample structs, so iw7's cannot be reused:
-				// the vis sample stride is 0x50, not iw7's 0x48, and the color is packed
-				// bytes rather than floats.  measured from dumped core_mod element memory
-				// (ring element size ramps 0->50 in both size floats, rotationTotal
-				// accumulates rotationDelta, colors ramp 255,132,45 style) - field names
-				// past size[] follow the t6 lineage and are pending confirmation against
-				// BlackOps3.exe.
-
 				struct t7_vis_state
 				{
 					unsigned char color[4];
@@ -45,9 +23,6 @@ namespace zonetool::t7
 					float rotationTotal;
 					float size[2];
 					float scale;
-					// Measured from BO3's HDR-era sample layout. IW7 represents this
-					// channel with PARTICLE_MODULE_INTENSITY_GRAPH; dropping it made
-					// emissive T7 effects valid but effectively invisible.
 					float emission;
 					float unk[3];
 				};
@@ -76,32 +51,20 @@ namespace zonetool::t7
 				};
 				static_assert(sizeof(t7_vel_sample) == 0x60);
 
-				// t7 trail extended def (elemType 5), 0x30 bytes, measured from
-				// BlackOps3.exe's trail loader/renderer.  only scrollTimeMsec and
-				// repeatDist line up with iw7's FxTrailDef; the two floats iw7 calls
-				// invSplit* are actually alpha fade lengths in t7, and 0x08 is unknown -
-				// the converter only reads the first two fields so the rest stay labelled
-				// as measured rather than force-fit to iw7's names
 				struct t7_trail_def
 				{
-					int scrollTimeMsec;   // 0x00 time modulus
-					int repeatDist;       // 0x04 distance divisor
-					int unk_08;           // 0x08 open
-					float fadeInDist;     // 0x0C alpha fade-in length
-					float fadeOutDist;    // 0x10 alpha fade-out length
-					int vertCount;        // 0x14
-					void* verts;          // 0x18
-					int indCount;         // 0x20
-					int pad_24;           // 0x24
-					void* inds;           // 0x28
+					int scrollTimeMsec;
+					int repeatDist;
+					int unk_08;
+					float fadeInDist;
+					float fadeOutDist;
+					int vertCount;
+					void* verts;
+					int indCount;
+					int pad_24;
+					void* inds;
 				};
 
-				// ---- t7 element flags --------------------------------------------------
-				// low bits shared with the whole cod lineage; verified against the
-				// thundergun set: sphere offset rides the spark cluster elements
-				// (spawnOffsetRadius 1), cylinder rides the dust swirls, the velocity
-				// graph bit rides every element carrying non zero velocity samples and
-				// the gravity bit rides the one element with a non zero gravity range.
 				enum t7_elem_flags : unsigned int
 				{
 					T7_FX_ELEM_SPAWN_RELATIVE_TO_EFFECT = 0x2,
@@ -129,17 +92,6 @@ namespace zonetool::t7
 					T7_FX_ELEM_NONUNIFORM_SCALE = 0x10000000,
 				};
 
-				// t7 uses the treyarch FxElemType enum, not the iw lineage one iw7
-				// inherited.  0..6 are the t5/t6 material-sprite block (it inserts
-				// SPRITE_ROTATED and LINE that iw removed, so trail is 5 not 3), but from
-				// 9 up t7 diverges from t6 too: it inserts one type at 9 and a lens flare
-				// at 12, shifting decal to 13 and runner to 14.  measured from
-				// BlackOps3.exe's single-visual zone loader (sub_1413FBDF0) which
-				// identifies each type by the asset kind it loads, cross-checked against
-				// the extended-def switch {5,8,10,12} mapping 1:1 onto boiii-free's
-				// FxElemExtendedDefPtr {trailDef, dynamicLightDef, spotLightDef,
-				// lensFlareDef}.  byte 8 = omni light matches the thundergun's
-				// gfx_dlight_gen_omni element.
 				enum t7_elem_type : unsigned char
 				{
 					T7_ELEM_TYPE_SPRITE_BILLBOARD = 0,
@@ -151,14 +103,14 @@ namespace zonetool::t7
 					T7_ELEM_TYPE_CLOUD = 6,
 					T7_ELEM_TYPE_MODEL = 7,
 					T7_ELEM_TYPE_OMNI_LIGHT = 8,
-					T7_ELEM_TYPE_UNKNOWN_9 = 9,   // t7 insertion, no visual/extended, identity unknown
+					T7_ELEM_TYPE_UNKNOWN_9 = 9,
 					T7_ELEM_TYPE_SPOT_LIGHT = 10,
 					T7_ELEM_TYPE_SOUND = 11,
-					T7_ELEM_TYPE_LENS_FLARE = 12, // t7 insertion (FxLensFlareVisualDef asset)
+					T7_ELEM_TYPE_LENS_FLARE = 12,
 					T7_ELEM_TYPE_DECAL = 13,
 					T7_ELEM_TYPE_RUNNER = 14,
-					T7_ELEM_TYPE_UNKNOWN_15 = 15, // no visual, routed from FX_SpawnElem
-					T7_ELEM_TYPE_UNKNOWN_16 = 16, // no visual
+					T7_ELEM_TYPE_UNKNOWN_15 = 15,
+					T7_ELEM_TYPE_UNKNOWN_16 = 16,
 				};
 
 				bool is_sprite_type(unsigned char type)
@@ -178,13 +130,6 @@ namespace zonetool::t7
 					}
 				}
 
-				// the element types this converter can build a real iw7 element for:
-				// the sprite block, plus model/decal/runner which carry their own visuals.
-				// Omni light is converted through IW7's stock light_fx_default profile;
-				// the T7 element curves retain its color/intensity/size. Spot light and
-				// sound still need asset-specific translation, lens flare needs an
-				// FxLensFlareVisualDef converter, and 9/15/16 remain unidentified. Those
-				// unsupported forms are dropped rather than mapped to dangling assets.
 				bool is_convertible_type(unsigned char type)
 				{
 					if (is_sprite_type(type))
@@ -203,10 +148,6 @@ namespace zonetool::t7
 						return false;
 					}
 				}
-
-				// ---- pointer safety ----------------------------------------------------
-				// referenced assets keep non null pointers into memory that is no longer
-				// mapped, so nothing here is dereferenced without checking it first
 
 				bool is_readable(const void* ptr, std::size_t size)
 				{
@@ -254,7 +195,6 @@ namespace zonetool::t7
 					return nullptr;
 				}
 
-				// every asset in both games keeps its name in the first field
 				const char* asset_name(const void* asset)
 				{
 					if (!is_readable(asset, sizeof(void*)))
@@ -278,12 +218,6 @@ namespace zonetool::t7
 					return stub;
 				}
 
-				// a converted material must be referenced by the exact name the material
-				// converter writes it under (mo/ vs el/ depends on the material's techset,
-				// not its name) or the reference dangles and the game draws a null material
-				// - crashing in the technique lookup.  reuse the material converter's own
-				// naming rather than the old name-only heuristic that guessed el/ for
-				// everything gfx_*
 				i7::Material* material_alias(Material* material, utils::memory::allocator& allocator)
 				{
 					if (!is_readable(material, sizeof(void*)))
@@ -291,10 +225,6 @@ namespace zonetool::t7
 						return nullptr;
 					}
 
-					// the material pointer stored on an fx element is a name-only stub: its
-					// techniqueSet is null, so the techset-based el/mo naming would fall back
-					// to the wrong guess.  resolve the full material from the asset pool by
-					// name so get_converted_name sees the real techset
 					Material* full = material;
 					const auto* stub_name = asset_name(material);
 					if (stub_name)
@@ -316,8 +246,6 @@ namespace zonetool::t7
 					return alias_asset<i7::Material>(allocator.duplicate_string(name), allocator);
 				}
 
-				// ---- element type mapping ---------------------------------------------
-
 				unsigned int convert_elem_type(const FxElemDef* elem)
 				{
 					switch (elem->elemType)
@@ -327,10 +255,6 @@ namespace zonetool::t7
 					case T7_ELEM_TYPE_SPRITE_ROTATED:   return i7::PARTICLE_ELEMENT_TYPE_ORIENTED_SPRITE;
 					case T7_ELEM_TYPE_TAIL:             return i7::PARTICLE_ELEMENT_TYPE_TAIL;
 					case T7_ELEM_TYPE_LINE:
-						// T7 line elements with an authored velocity graph are stretched streaks,
-						// not camera-facing quads. The Servant muzzle uses exactly this form.
-						// Lines without velocity (the Thundergun impact ring) would collapse as
-						// tails, so keep only that form on the billboard fallback.
 						return (elem->flags & (T7_FX_ELEM_HAS_VELOCITY_GRAPH_LOCAL |
 							T7_FX_ELEM_HAS_VELOCITY_GRAPH_WORLD))
 							? i7::PARTICLE_ELEMENT_TYPE_TAIL
@@ -343,15 +267,9 @@ namespace zonetool::t7
 					case T7_ELEM_TYPE_DECAL:            return i7::PARTICLE_ELEMENT_TYPE_DECAL;
 					case T7_ELEM_TYPE_RUNNER:           return i7::PARTICLE_ELEMENT_TYPE_RUNNER;
 
-					// iw7 has no rotated sprite or line element; both draw a flat sprite of
-					// their material.  the thundergun's line elements carry no velocity, so
-					// a billboard renders them properly where an iw7 tail would collapse to
-					// a point
 					default:                            return i7::PARTICLE_ELEMENT_TYPE_BILLBOARD_SPRITE;
 					}
 				}
-
-				// ---- curve helpers (xoxor4d's research, via the reference converter) ---
 
 				enum class sample_value_type
 				{
@@ -529,10 +447,6 @@ namespace zonetool::t7
 					curve.controlPoints[1].value = 0.0f;
 				}
 
-				// ---- conversion context ------------------------------------------------
-				// the reference keeps these as file scope globals; a context keeps the
-				// same accumulate-then-apply behavior without leaking between assets
-
 				struct convert_context
 				{
 					utils::memory::allocator* allocator;
@@ -544,11 +458,6 @@ namespace zonetool::t7
 					const char* fx_name;
 				};
 
-				// BO3's shared particle materials arrive as name-only references, so the
-				// material converter cannot recover their image pointers and emits white/
-				// black placeholders. The Servant uses the same visual roles as IW7's
-				// stock F&F black hole; bind those roles to the stock, always-loaded EQ
-				// materials whose classifier, atlas, z-feather and HDR state are complete.
 				struct particle_material_remap
 				{
 					const char* source;
@@ -594,10 +503,6 @@ namespace zonetool::t7
 					}
 					else if (effect_name.find("fx_idgun_muz_") != std::string::npos)
 					{
-						// All four Servant muzzle effects use a three-visual gel-splat
-						// emitter.  The streamed middle material can collapse to the
-						// owning effect name; the preserved working conversion proves
-						// that visual is the spread material below.
 						return "el/gfx_gel_splat_spread_em";
 					}
 					else if (effect_name.find("fx_idgun_hole_") != std::string::npos)
@@ -619,9 +524,6 @@ namespace zonetool::t7
 						effect_name.find("fx_idgun_muz_") == std::string::npos &&
 						effect_name.find("fx_idgun_projectile") == std::string::npos;
 
-					// The Servant portal graphs are authored much larger than IW7's
-					// world-space presentation. Scale the graph itself; init-attribute
-					// defaults do not scale graph-driven emitters at runtime.
 					return idgun_world_effect ? 0.2675f : 1.0f;
 				}
 
@@ -673,10 +575,6 @@ namespace zonetool::t7
 						effect_name = effect_name.substr(effect_separator + 1);
 					}
 
-					// Some streamed T7 sprite visual arrays contain a non-material slot
-					// pointing back at the owning FxEffectDef (or a generated new########
-					// placeholder). Treating that pointer as Material* serializes names such
-					// as mo/fx_bow_* and makes IW7 request assets that cannot exist.
 					return source_name == effect_name || source_name.starts_with("new");
 				}
 
@@ -694,8 +592,6 @@ namespace zonetool::t7
 							return true;
 						}
 
-						// The Servant has measured per-element material fallbacks for damaged
-						// streamed references. Preserve those instead of dropping the emitter.
 						return idgun_invalid_material_fallback(ctx) != nullptr;
 					};
 
@@ -752,10 +648,6 @@ namespace zonetool::t7
 							effect_base = effect_base.substr(effect_separator + 1);
 						}
 
-						// During a streamed T7 zone load, a damaged name-only material
-						// reference can resolve to the owning effect name (or a generated
-						// "new########" placeholder). Use the already measured per-element
-						// role fallback instead of serializing that non-material name.
 						if (source_name == effect_base || source_name.starts_with("new"))
 						{
 							if (const auto* fallback = idgun_invalid_material_fallback(ctx))
@@ -786,8 +678,6 @@ namespace zonetool::t7
 					return is_readable(samples, sizeof(t7_vel_sample) * count) ? samples : nullptr;
 				}
 
-				// ---- UPDATE modules ----------------------------------------------------
-
 				void generate_color_module(convert_context& ctx, FxElemDef* elem,
 					std::vector<i7::ParticleModuleDef>& modules)
 				{
@@ -817,12 +707,6 @@ namespace zonetool::t7
 						module_data.m_curves[i].scale = 1.0f;
 					}
 
-					// T7's source sample bytes are RGBA, but IW7's particle color graph
-					// consumes its RGB curves in B,G,R order. Writing source R to curve 0
-					// made every blue/cyan bow effect render red in game. Keep alpha in
-					// curve 3 and swap the red/blue curve destinations. T7's amplitude
-					// half is a delta, while IW7's second curve is the randomized maximum,
-					// so add base + amplitude rather than treating it as an absolute.
 					for (auto i = 0; i < sample_count; i++)
 					{
 						const auto& base = vis[i].base.color;
@@ -918,8 +802,6 @@ namespace zonetool::t7
 					if (effect_name.find("fx_idgun_") != std::string::npos &&
 						element_uses_material(elem, "gfx_shockwave_elec_anim_em_i2048"))
 					{
-						// The BO3 HDR purple shockwave reads at half intensity after the
-						// IW7 curve translation. Restore it to a 1.0 presentation scale.
 						for (auto& curve : module_data.m_curves) curve.scale *= 2.0f;
 					}
 
@@ -947,8 +829,6 @@ namespace zonetool::t7
 					const auto sample_count = elem->visStateIntervalCount + 1;
 					const auto sample_size = 1.0f / std::max(1, sample_count - 1);
 
-					// curve scale is the largest key (pos or neg) doubled, key values are
-					// key / scale - width and height each pair up as base + amplitude
 					float width_scale = 0.0f;
 					float height_scale = 0.0f;
 					float scale_scale = 0.0f;
@@ -975,8 +855,6 @@ namespace zonetool::t7
 						return;
 					}
 
-					// used curves pack to the front, unused ones follow with defaults;
-					// the second curve of each pair sits three slots later
 					int width_index0 = -1;
 					int height_index0 = -1;
 					int scale_index0 = -1;
@@ -1106,8 +984,6 @@ namespace zonetool::t7
 
 					const auto sample_count = elem->visStateIntervalCount + 1;
 
-					// rotation deltas are per sample interval; the curve carries them as a
-					// rate, so the scale folds in the interval count and the msec unit
 					min_max_curve_sample rotation{};
 					for (auto s = 0; s < sample_count; s++)
 					{
@@ -1193,7 +1069,6 @@ namespace zonetool::t7
 
 					if (!local && !world)
 					{
-						// samples exist but neither graph flag is set; nothing would read them
 						return;
 					}
 
@@ -1279,8 +1154,6 @@ namespace zonetool::t7
 					modules.push_back(module);
 				}
 
-				// ---- INIT modules ------------------------------------------------------
-
 				void generate_init_spawn_module(convert_context& ctx, FxElemDef* elem,
 					std::vector<i7::ParticleModuleDef>& modules)
 				{
@@ -1320,9 +1193,6 @@ namespace zonetool::t7
 					module_data.m_useNonUniformInterpolationForColor = false;
 					module_data.m_useNonUniformInterpolationForSize = (elem->flags & T7_FX_ELEM_NONUNIFORM_SCALE) != 0;
 
-					// Preserve the upstream/native baseline for other converted effects.
-					// Servant assets use a unit base, while their actual world-size
-					// correction is applied directly to size-curve scales above.
 					const std::string effect_name = ctx.fx_name ? ctx.fx_name : "";
 					const bool idgun_world_effect = effect_name.find("fx_idgun_") != std::string::npos &&
 						effect_name.find("fx_idgun_muz_") == std::string::npos &&
@@ -1456,10 +1326,6 @@ namespace zonetool::t7
 						return;
 					}
 
-					// a static single-frame sprite needs no atlas module - the shipped iw7
-					// vfx only carry one when the effect actually animates (e.g. medusa at
-					// 24fps) or draws from a multi-frame grid.  emitting one for a plain
-					// sprite would also feed a bogus start frame
 					if (elem->atlas.fps == 0 && elem->atlas.indexRange <= 1)
 					{
 						return;
@@ -1471,9 +1337,6 @@ namespace zonetool::t7
 					module_data.type = module.moduleType;
 					module_data.m_flags = 0;
 
-					// iw7's m_startFrame is the first cell to show, not a count - the stock
-					// vfx start at 0 and take the grid size from the material.  fps and
-					// loopCount carry straight across
 					module_data.m_playRate = elem->atlas.fps;
 					module_data.m_startFrame = 0;
 					module_data.m_loopCount = elem->atlas.loopCount;
@@ -1577,9 +1440,6 @@ namespace zonetool::t7
 
 					if (elem->elemType == T7_ELEM_TYPE_SPRITE_ROTATED)
 					{
-						// Rotated sprites already carry their authored 3D angle in
-						// spawnAngles. Native IW7 ground-oriented sprites use identity here
-						// and apply orientation through the 3D rotation state.
 						module_data.m_orientationQuat.v[3] = 1.0f;
 					}
 					else
@@ -1613,11 +1473,6 @@ namespace zonetool::t7
 					module_data.type = module.moduleType;
 					module_data.m_flags = i7::PARTICLE_MODULE_FLAG_HAS_LIGHT_DEFS;
 
-					// T7 type 8 points at a 0x240-byte LightDescription asset, not an
-					// IW7 GfxLightDef. The element's existing color/intensity/size curves
-					// carry its authored appearance; use IW7's all-map FX light profile as
-					// the renderable falloff definition. This matches the native IW7 black
-					// hole's omni-light module contract exactly.
 					module_data.m_linkedAssetList.numAssets = 1;
 					module_data.m_linkedAssetList.assetList =
 						ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(1);
@@ -1653,9 +1508,6 @@ namespace zonetool::t7
 
 					module_data.m_averagePastVelocities = 0;
 					module_data.m_maxParentSpeed = 0;
-					// BO3's render handlers place a type-3 tail backward along velocity
-					// and a type-4 line forward along it. IW7 expresses that distinction
-					// with m_tailLeading. Native IW7 trailing tails store false.
 					module_data.m_tailLeading = elem->elemType == T7_ELEM_TYPE_LINE;
 					module_data.m_scaleWithVelocity = false;
 					module_data.m_rotateAroundPivot = false;
@@ -1677,7 +1529,6 @@ namespace zonetool::t7
 					module_data.type = module.moduleType;
 					module_data.m_flags = 0;
 
-					// reference defaults; the trail def fills the distances when present
 					module_data.m_numPointsMax = 16;
 					module_data.m_splitAngle = 0.0f;
 					module_data.m_centerOffset = 0.0f;
@@ -1963,8 +1814,6 @@ namespace zonetool::t7
 					modules.push_back(module);
 				}
 
-				// ---- TEST modules ------------------------------------------------------
-
 				void generate_test_module(convert_context& ctx, FxEffectDefRef ref,
 					i7::ParticleModuleType type, bool kill, unsigned __int64 state_flag,
 					std::vector<i7::ParticleModuleDef>& modules)
@@ -1975,11 +1824,6 @@ namespace zonetool::t7
 						return;
 					}
 
-					// BO3 owns runner/death children through the parent FX lifecycle. In
-					// IW7, the converted Servant vortex death event detaches its looping
-					// hole_xl child as the parent is deleted, leaving an immortal black-
-					// smoke system. The GSC already plays the authored collapse effect,
-					// so omit only this orphaning child event.
 					const std::string effect_name = ctx.fx_name ? ctx.fx_name : "";
 					const std::string child_name = name;
 					if (type == i7::PARTICLE_MODULE_TEST_DEATH &&
@@ -2011,8 +1855,6 @@ namespace zonetool::t7
 
 					modules.push_back(module);
 				}
-
-				// ---- emitter -----------------------------------------------------------
 
 				void store_group(convert_context& ctx, i7::ParticleModuleGroupDef* group,
 					const std::vector<i7::ParticleModuleDef>& modules)
@@ -2051,27 +1893,18 @@ namespace zonetool::t7
 
 					if (looping)
 					{
-						// BO3's loop scheduler reads FxSpawnDefLooping::spawnCount at
-						// element +0x10/+0x14 and spawns base..base+amplitude particles on
-						// every interval. The old IW5-derived path ignored this T7 extension
-						// and therefore emitted only one particle per interval.
 						const auto spawn_count_min = std::max(0, elem->spawn.looping.spawnCount.base);
 						const auto spawn_count_max = std::max(spawn_count_min,
 							elem->spawn.looping.spawnCount.base + elem->spawn.looping.spawnCount.amplitude);
 
 						if (elem->spawn.looping.count == 0x7FFFFFFF)
 						{
-							// T7 stores milliseconds BETWEEN spawns; IW7 stores spawns per
-							// second. The old code copied 100 ms as 100/sec instead of 10/sec.
 							const auto interval = std::max(1, elem->spawn.looping.intervalMsec);
 							const auto intervals_per_second = 1000.0f / static_cast<float>(interval);
 							emitter->particleSpawnRate.min = spawn_count_min * intervals_per_second;
 							emitter->particleSpawnRate.max = spawn_count_max * intervals_per_second;
 
-							// A zero emitter lifetime already means it loops until stopped.
-							// INFINITE_PARTICLE_LIFE incorrectly made every emitted sprite
-							// immortal, accumulating the vortex into an opaque cloud.
-							emitter->particleCountMax = 1; // finalized after particleLife
+							emitter->particleCountMax = 1;
 						}
 						else
 						{
@@ -2108,9 +1941,6 @@ namespace zonetool::t7
 
 					if (looping && elem->spawn.looping.count == 0x7FFFFFFF)
 					{
-						// IW7 caps concurrently alive particles per emitter. One was too
-						// small for any continuous ring/smoke trail; derive the exact
-						// capacity required by source rate * maximum particle lifetime.
 						const auto concurrent = static_cast<unsigned int>(std::ceil(
 							emitter->particleSpawnRate.max * std::max(0.0f, emitter->particleLife.max)));
 						emitter->particleCountMax = std::max(1u, concurrent);
@@ -2127,7 +1957,6 @@ namespace zonetool::t7
 
 					emitter->spawnFrustumCullRadius = elem->spawnFrustumCullRadius;
 
-					// t7 dropped the per element random seed the iw lineage kept
 					emitter->randomSeed = 0;
 
 					emitter->particleSpawnShapeRange.min = 0.0f;
@@ -2249,10 +2078,6 @@ namespace zonetool::t7
 						auto* elem = &asset->elemDefs[i];
 						ctx.elem_index = i;
 
-						// Only convert element types with an IW7 equivalent and a resolvable
-						// visual. Omni lights use the stock IW7 FX light profile. Spot lights,
-						// sound, lens flare and unidentified types remain explicit drops.
-						// rather than referencing an asset the game cannot load
 						if (!is_convertible_type(elem->elemType))
 						{
 							ZONETOOL_WARNING("vfx \"%s\": dropping element %i (unsupported type %u)",
@@ -2292,10 +2117,6 @@ namespace zonetool::t7
 
 				iw7_asset->phaseOptions = i7::PARTICLE_PHASE_OPTION_PHASE_NEVER;
 
-				// the shipped iw7 viewmodel muzzle flashes (vfx_muz_ar_v/_w, the exact
-				// effect class) use drawFrustumCullRadius 0 with updateFrustumCullRadius
-				// -1; a negative draw radius risks culling the whole system, so match the
-				// game's own value rather than the reference converter's blanket -1
 				iw7_asset->drawFrustumCullRadius = 0.0f;
 				iw7_asset->updateFrustumCullRadius = -1.0f;
 

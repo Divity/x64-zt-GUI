@@ -314,13 +314,6 @@ namespace zonetool
 			search_paths.emplace_back("zonetool\\");
 			add_paths_from_directory("zonetool_paths");
 
-			// Dumps are always available as a read-only fallback source, so an
-			// asset that was dumped can be used where it lies instead of being
-			// copied into zonetool\<ff>\ first. "dump\" covers dump\<type>\...
-			// and its subdirectories cover dump\<zone>\<type>\..., which is how
-			// dumpzone actually lays them out.
-			// Appended last: zonetool\<ff>\, zonetool\ and zonetool_paths all
-			// still take precedence, so a local file always wins over a dump.
 			search_paths.emplace_back("dump\\");
 			add_paths_from_directory("dump");
 

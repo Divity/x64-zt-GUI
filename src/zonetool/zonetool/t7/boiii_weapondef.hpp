@@ -159,8 +159,6 @@ namespace zonetool::t7::boiii
 		std::int32_t damage;
 	};
 
-	// Kept verbatim from the maintainer-provided BOIII definition. Pointer and enum
-	// aliases above preserve the source ABI without importing the BOIII client tree.
 #include "boiii_weapondef.inc"
 
 #pragma pack(push, 1)

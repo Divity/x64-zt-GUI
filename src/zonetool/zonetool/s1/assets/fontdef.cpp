@@ -1,4 +1,4 @@
-#include <std_include.hpp>
+﻿#include <std_include.hpp>
 #include "fontdef.hpp"
 
 #include "stb_truetype.h"

@@ -12,10 +12,6 @@ namespace zonetool::t7
 		{
 			namespace
 			{
-			// confirmed against the definitions of several weapons, the computed
-			// WeaponDef offsets from the supplied 0x1900 BOIII layout do not apply to
-			// this retail executable. Keep these measured live offsets separate from
-			// boiii::WeaponDef and snapshot the whole definition for layout research.
 			namespace def
 			{
 				constexpr std::size_t projectileModel = 0x1010;
@@ -23,9 +19,6 @@ namespace zonetool::t7
 				constexpr std::size_t projTrailEffect = 0x11B8;
 			}
 
-			// t7 names every view anim after the action it plays, which is enough to
-				// place it in the iw7 slot table, longest suffix first so that a name
-				// like vm_x_ads_fire is not taken for a plain fire
 				struct anim_slot
 				{
 					const char* suffix;
@@ -119,8 +112,6 @@ namespace zonetool::t7
 					return nullptr;
 				}
 
-				// the layout these offsets came from is computed, so every field is
-				// checked before it is touched rather than trusting the struct size
 				template <typename T>
 				T read(const void* base, std::size_t off)
 				{
@@ -138,8 +129,6 @@ namespace zonetool::t7
 					return safe_name(read<const char*>(base, off));
 				}
 
-				// every t7 asset keeps its name in the first field, so one path covers
-				// the model and effect handles alike
 				const char* read_asset_name(const void* base, std::size_t off)
 				{
 					const auto* handle = read<const void*>(base, off);
@@ -151,8 +140,6 @@ namespace zonetool::t7
 					return safe_name(*static_cast<const char* const*>(handle));
 				}
 
-				// the computed WeaponDef offsets do not survive either, so the models are
-				// found by name: t7 suffixes them _view and _world
 				void find_models(const void* weap, const char** view, const char** world)
 				{
 					for (std::size_t off = 0; off < 0x1800 && (!*view || !*world); off += sizeof(void*))
@@ -171,13 +158,11 @@ namespace zonetool::t7
 
 						const std::string model = name;
 
-						// effect paths end in _world too, models never contain a slash
 						if (model.find('/') != std::string::npos)
 						{
 							continue;
 						}
 
-						// upgraded variants suffix the model _view_upg and _world_upg
 						if (!*view && model.find("_view") != std::string::npos)
 						{
 							*view = name;
@@ -213,7 +198,6 @@ namespace zonetool::t7
 					}
 
 					ordered_json effect;
-					// FX_COMBINED_FX, a converted t7 effect is an FxEffectDef and not a vfx
 					effect["type"] = 0;
 					effect["fx"] = value;
 					data[key] = effect;
@@ -232,9 +216,6 @@ namespace zonetool::t7
 					return nullptr;
 				}
 
-				// the oracle (a working iw7 weapon mod built by the zonetool author,
-				// dump/raygun) leaves no slot a weapon needs empty: it reuses one anim
-				// across the related slots rather than nulling them
 				struct anim_fallback
 				{
 					const char* slot;
@@ -258,8 +239,6 @@ namespace zonetool::t7
 					{ "WEAP_ANIM_EMPTY_DROP", "WEAP_ANIM_DROP" },
 				};
 
-				// t7 weapons carry no iw7 additive or melee anims, so the oracle points
-				// these at the stock viewmodel anims iw7 already ships
 				struct anim_default
 				{
 					const char* anim;
@@ -316,9 +295,6 @@ namespace zonetool::t7
 					}
 				}
 
-				// the only attachment the oracle keeps from stock is doubletap. the
-				// template's own pack-a-punch attachment and the packages its override
-				// rows name belong to the template weapon, not to this one
 				void clear_template_attachments(ordered_json& data, ordered_json& weap_def)
 				{
 					for (const auto* key : { "attachments", "attachments2", "attachments3",
@@ -604,8 +580,6 @@ namespace zonetool::t7
 					return;
 				}
 
-				// the definition leaves its own internal name empty, the variant is what
-				// carries the name, so only its readability can be checked
 				const auto* weap = static_cast<const void*>(variant_asset->weapDef);
 				if (!is_readable(weap, sizeof(void*)))
 				{
@@ -649,10 +623,6 @@ namespace zonetool::t7
 				data["fHipViewKickCenterSpeed"] = variant_asset->fHipViewKickCenterSpeed;
 				set_string(data, "szAltWeaponName", safe_name(variant_asset->szAltWeaponName));
 
-				// the template is a real iw7 weapon, so anything of its own it still
-				// names has to go: the oracle ships no complex models, no camo model
-				// or material swaps, and only the stock attachments. left in place
-				// these point at facemelter assets this zone never carries
 				for (const auto* key : { "complexGunXModel", "complexGunXModelLeftHand",
 					"complexGunXModelRightHand", "complexWorldModel",
 					"complexWorldModelLeftHand", "complexWorldModelRightHand" })
@@ -680,10 +650,6 @@ namespace zonetool::t7
 
 				clear_template_attachments(data, weap_def);
 
-				// the oracle ships the packages its weapon names instead of pointing at
-				// another weapon's. left as the template's these are referenced, so they
-				// resolve to the default whenever this zone loads before the one that
-				// owns them
 				weap_def["vfxPackage"] = "t7_converted_vfxpackage";
 				weap_def["sfxPackage"] = "t7_converted_sfxpackage";
 

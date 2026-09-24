@@ -26,11 +26,6 @@ namespace zonetool::t7
 					assert(asset->numBones + asset->numCosmeticBones < 256);
 				}
 
-				// T7 stores XModel meshes from the coarsest LOD to the most detailed,
-				// while IW7 expects lodInfo[0] to be the most detailed. Keep the six
-				// highest-detail T7 meshes and reverse them into IW7 order. Clamping
-				// before choosing the source index used to discard the best LODs on
-				// eight-LOD models and made the coarsest mesh render up close.
 				const auto source_lod_count = asset->numLods;
 				new_asset->numLods = static_cast<unsigned char>(std::min<unsigned int>(source_lod_count, 6));
 				auto source_lod_index = [source_lod_count](const unsigned int iw7_lod)
@@ -68,9 +63,6 @@ namespace zonetool::t7
 				REINTERPRET_CAST_SAFE(partClassification);
 				REINTERPRET_CAST_SAFE(baseMat);
 
-				// baseMat is world-space per bone. If the mesh was re-authored around
-				// j_gun then the bones have to follow it, or tags like tag_flash stay
-				// behind and the model reads as split.
 				const auto& offset = model_offset::get(asset->name ? asset->name : "");
 				if (offset.valid)
 				{
@@ -99,8 +91,6 @@ namespace zonetool::t7
 					auto calc_lod_dist = [&]()
 					{
 						float constantFactor = 1000000.0f;
-						// Preserve the converter's existing near-to-far distance schedule.
-						// The geometry order is reversed independently below.
 						return std::round(sqrtf(constantFactor / asset->averageTriArea[i]));
 					};
 
@@ -137,8 +127,6 @@ namespace zonetool::t7
 				new_asset->materialHandles = allocator.allocate_array<zonetool::iw7::Material*>(materials.size());
 				for (auto i = 0; i < materials.size(); i++)
 				{
-					// the material converter writes these under a flattened name, the model
-					// has to ask for the same one or the zone falls back to the default
 					const auto converted = material::get_converted_name(materials[i]);
 					const auto stub = allocator.allocate<zonetool::iw7::Material>();
 					stub->name = allocator.duplicate_string(converted);
@@ -159,8 +147,6 @@ namespace zonetool::t7
 						}
 					}
 
-					// If an eight-LOD source used one of the two discarded coarse
-					// meshes for collision, use the coarsest retained mesh instead.
 					if (!collision_lod_retained && new_asset->numLods)
 					{
 						new_asset->collLod = new_asset->numLods - 1;
@@ -200,10 +186,6 @@ namespace zonetool::t7
 
 				new_asset->memUsage = 0;
 
-				// t7 collmaps are not havok packfiles, so there is nothing to put in a
-				// PhysicsAsset. naming one anyway makes the zone carry an asset whose
-				// havokData is null, and the havok loader returns null for that and is
-				// dereferenced on the way back out
 				new_asset->physicsAsset = nullptr;
 
 				new_asset->hasLods = asset->numLods ? 1 : 0;
@@ -221,8 +203,6 @@ namespace zonetool::t7
 				utils::memory::allocator allocator;
 				const auto converted_asset = convert(asset, allocator);
 
-				// bone names are script strings resolved inside the IW7 dumper, so a
-				// rename has to be applied there rather than on the converted asset
 				const auto& offset = model_offset::get(asset->name ? asset->name : "");
 				if (!offset.bones.empty())
 				{

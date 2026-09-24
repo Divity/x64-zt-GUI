@@ -188,6 +188,9 @@ namespace zonetool::iw7
 		try
 		{
 			// dump assets
+			DUMP_ASSET(ASSET_TYPE_ANIMCLASS, anim_class, AnimationClass);
+			DUMP_ASSET(ASSET_TYPE_BEHAVIOR_TREE, behavior_tree, BehaviorTree);
+			DUMP_ASSET(ASSET_TYPE_SUIT, suit, SuitDef);
 			DUMP_ASSET(ASSET_TYPE_DDL, ddl, DDLFile);
 			DUMP_ASSET(ASSET_TYPE_FX, fx_effect_def, FxEffectDef);
 			DUMP_ASSET(ASSET_TYPE_PARTICLE_SIM_ANIMATION, fx_particle_sim_animation, FxParticleSimAnimation);
@@ -436,12 +439,6 @@ namespace zonetool::iw7
 		reallocate_asset_pool(type, multiplier * new_size);
 	}
 
-	// iw7 ships 16 fx because it uses vfx for everything, and a converted t7 zone
-	// brings hundreds. these pools hand out slots from a freelist, so pointing
-	// g_assetPool at a bigger buffer the way reallocate_asset_pool does only moves
-	// the head variable - the list itself still walks the original slots. chain new
-	// ones onto the head instead, and do it when the pool actually runs dry so it
-	// cannot matter whether the engine has built its list yet
 	utils::hook::detour db_alloc_pool_entry_hook;
 
 	void grow_freelist_pool(const XAssetType type, const unsigned int count)
@@ -943,7 +940,6 @@ namespace zonetool::iw7
 		//xanim_parts::secondary_anims.clear();
 	}
 
-	// where buildzone drops a copy of the finished zone, renamed to mod.ff
 	constexpr auto MOD_DEPLOY_DIR = "mods/AAE-v0.0.1";
 
 	void deploy_built_zone(const std::string& fastfile)
@@ -1020,8 +1016,6 @@ namespace zonetool::iw7
 
 		zonetool::taskbar::clear();
 
-		// deploy the built zone as mod.ff so it can be shipped under fs_game,
-		// which is the only mod file iw7-mod downloads to joining clients
 		deploy_built_zone(fastfile);
 
 		ignore_assets.clear();

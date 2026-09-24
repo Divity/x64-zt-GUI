@@ -1,10 +1,7 @@
 #pragma once
 
-// verbatim iw7 assets used as the base for converted t7 weapons, the iw7
-// loader reads every field it knows about so all of them have to be present
 namespace zonetool::t7::converter::iw7::weapon_template
 {
-	// weapons/iw7_facemelter_zm.json
 	constexpr unsigned char weapon_data[] =
 	{
 		123,34,115,122,73,110,116,101,114,110,97,108,78,97,109,101,34,58,34,105,
@@ -1311,7 +1308,6 @@ namespace zonetool::t7::converter::iw7::weapon_template
 		105,100,103,101,116,34,58,34,34,125,
 	};
 
-	// animpkg/iw7_blackholegun_mp_package.json
 	constexpr unsigned char anim_package_data[] =
 	{
 		123,34,109,101,108,101,101,65,110,105,109,84,121,112,101,34,58,49,44,34,

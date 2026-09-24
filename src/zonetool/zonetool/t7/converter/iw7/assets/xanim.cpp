@@ -121,7 +121,7 @@ namespace zonetool::t7
 							readRaw(newData, data, dataEnd); // Frame count
 
 							if (frameSize == 2)
-								readRaw(newData, data, dataEnd, frameCount + 1); // Frame indices
+								readRaw(newData, data, dataEnd, frameCount + 1);
 
 							for (int f = 0; f < frameCount + 1 && !overflowed; ++f)
 								readConvert(newRandom, random, randomEnd, rotSize); // Rotation data
