@@ -592,6 +592,10 @@ namespace zonetool::iw7
 		try
 		{
 			// declare asset interfaces
+			ADD_ASSET(ASSET_TYPE_ANIMCLASS, anim_class);
+			ADD_ASSET(ASSET_TYPE_BEHAVIOR_TREE, behavior_tree);
+			ADD_ASSET(ASSET_TYPE_SUIT, suit);
+			ADD_ASSET(ASSET_TYPE_SUITANIMPACKAGE, suit_anim_package);
 			ADD_ASSET(ASSET_TYPE_DDL, ddl);
 			ADD_ASSET(ASSET_TYPE_FX, fx_effect_def);
 			ADD_ASSET(ASSET_TYPE_PARTICLE_SIM_ANIMATION, fx_particle_sim_animation);

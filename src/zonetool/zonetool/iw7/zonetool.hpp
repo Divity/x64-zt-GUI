@@ -13,6 +13,10 @@
 #include "zonetool/utils/utils.hpp"
 #include "zonetool/shared/shared.hpp"
 
+#include "assets/animclass.hpp"
+#include "assets/behaviortree.hpp"
+#include "assets/suit.hpp"
+#include "assets/suit_anim_package.hpp"
 #include "assets/ddl.hpp"
 #include "assets/fxeffectdef.hpp"
 #include "assets/fxparticlesimanimation.hpp"

@@ -1,6 +1,8 @@
 #include "std_include.hpp"
 #include "xmodel.hpp"
 
+#include <cstdlib>
+
 #include "../common/havok.hpp"
 
 namespace zonetool::iw7
@@ -80,6 +82,12 @@ namespace zonetool::iw7
 		// physics
 		asset->physicsAsset = read.read_asset<PhysicsAsset>();
 		asset->physicsFXShape = read.read_asset<PhysicsFXShape>();
+
+		if (const auto* no_model_physics = std::getenv("ZT_NO_MODEL_PHYSICS");
+			no_model_physics && no_model_physics[0] == '1')
+		{
+			asset->physicsAsset = nullptr;
+		}
 
 		const auto havok_data_path = "xmodel\\"s + name + "_lod";
 		asset->physicsLODData = havok::binary::parse_havok_data(havok_data_path, &asset->physicsLODDataSize, mem);

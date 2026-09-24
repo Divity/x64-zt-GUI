@@ -188,6 +188,9 @@ namespace zonetool::iw7
 		try
 		{
 			// dump assets
+			DUMP_ASSET(ASSET_TYPE_ANIMCLASS, anim_class, AnimationClass);
+			DUMP_ASSET(ASSET_TYPE_BEHAVIOR_TREE, behavior_tree, BehaviorTree);
+			DUMP_ASSET(ASSET_TYPE_SUIT, suit, SuitDef);
 			DUMP_ASSET(ASSET_TYPE_DDL, ddl, DDLFile);
 			DUMP_ASSET(ASSET_TYPE_FX, fx_effect_def, FxEffectDef);
 			DUMP_ASSET(ASSET_TYPE_PARTICLE_SIM_ANIMATION, fx_particle_sim_animation, FxParticleSimAnimation);

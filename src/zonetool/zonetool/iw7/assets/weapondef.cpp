@@ -301,6 +301,7 @@ namespace zonetool::iw7
 		WEAPON_PARSE_FIELD(deathAnimDamageType);
 		WEAPON_PARSE_FIELD(inventoryType);
 		WEAPON_PARSE_FIELD(fireType);
+		WEAPON_PARSE_FIELD(burstCount);
 
 		WEAPON_PARSE_FIELD(targetAssistType);
 		WEAPON_PARSE_FIELD(targetAssistBehavior);
@@ -1976,6 +1977,7 @@ namespace zonetool::iw7
 		WEAPON_DUMP_FIELD(deathAnimDamageType);
 		WEAPON_DUMP_FIELD(inventoryType);
 		WEAPON_DUMP_FIELD(fireType);
+		WEAPON_DUMP_FIELD(burstCount);
 
 		WEAPON_DUMP_FIELD(targetAssistType);
 		WEAPON_DUMP_FIELD(targetAssistBehavior);
