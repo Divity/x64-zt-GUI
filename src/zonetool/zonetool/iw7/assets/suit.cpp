@@ -42,7 +42,6 @@ namespace zonetool::iw7
 
 		ZONETOOL_INFO("Parsing suit \"%s\"...", name.data());
 
-		// parse json file
 		file.open("rb");
 		ordered_json data = json::parse(file.read_bytes(file.size()));
 		file.close();
