@@ -1733,13 +1733,20 @@ namespace zonetool::t7
 		XModelTagPos* tagPositions;
 		byte* partClassification;
 		DObjAnimMat* baseMat;
+		// numLods .. averageTriArea is the LOD block the client's LOD pick reads (GfxLodModelParams, 0x44 bytes;
+		// 0x1422E0210)
 		byte numLods;
 		XModelLod highestShadowLod;
 		XModelLod highestRenderLod;
 		float areaScale;
 		float cullOutRadius;
-		float unk[6];
+		// per view LOD setting (the view's LOD context byte 0xC): areaScale and cullOutRadius multipliers
+		float lodAreaScale[3];
+		float lodCullScale[3];
 		float averageTriArea[8];
+		// the LOD pick's caps (0x1422E07B0): flag 4 passes (0x141C73D70, 0x141C74740) clamp to [0], the static
+		// model pass (flag 2, 0x141C74EC0) to [1]
+		XModelLod lodCap[2];
 		XModelMesh* meshes[8];
 		XModelMeshMaterials* meshMaterials;
 		XModelUsage usage;
@@ -1849,7 +1856,9 @@ namespace zonetool::t7
 		int axial_sflags[2][3];
 		uint numverts;
 		vec3_t* verts;
-	};
+		// brushes are 112 bytes apart (side/vertex pointers tile brushsides / brushVerts); these 8 bytes are 0
+		char __unknown[8];
+	}; assert_sizeof(cbrush_t, 112);
 
 	struct ClipInfo
 	{
@@ -1976,12 +1985,15 @@ namespace zonetool::t7
 		int boneArrayOffset;
 	};
 
+	// Load_clipMap_t loads 104 bytes per pose; where the 8 extra bytes sit is unverified,
+	// only the size is. The converters take placements from DynEntityDef instead.
 	struct DynEntityPose
 	{
 		GfxPlacement pose;
 		float radius;
 		GfxEntityPreFrame prevFrame;
-	};
+		char __unverified_pad[8];
+	}; assert_sizeof(DynEntityPose, 0x68);
 
 	struct LocalClientFxUniqueHandle
 	{
@@ -1999,7 +2011,9 @@ namespace zonetool::t7
 		int physicsStartTime;
 		LocalClientFxUniqueHandle fxHandles[10];
 		int numFxHandles;
-	};
+		// Load_clipMap_t loads 136 bytes per client; the extra 24 are unverified
+		char __unverified_pad[24];
+	}; assert_sizeof(DynEntityClient, 0x88);
 
 	struct DynEntityServer
 	{
@@ -2292,6 +2306,21 @@ namespace zonetool::t7
 		ComUmbraGate* gates;
 	};
 
+	// Measured from the dedi's Load_ComWorld (0x1401ADF70): after the probe exploders come two
+	// arrays of the same 0x50-byte record (element loader 0x1401ADDC0) and one array of 0x10-byte
+	// named records (0x1401ADCF0).
+	struct ComWorldVolumeSet
+	{
+		const char* name;
+		uint boundsCount;
+		ComUmbraVolume* bounds;
+		uint bounds2Count;
+		ComUmbraVolume* bounds2;
+		float unknown[6];
+		uint indexCount;
+		uint* indices;
+	}; assert_sizeof(ComWorldVolumeSet, 0x50);
+
 	struct ComWorld
 	{
 		const char* name;
@@ -2306,9 +2335,15 @@ namespace zonetool::t7
 		uint* probeGuids;
 		uint probeExploderCount;
 		ComProbeExploder* probeExploders;
-		uint umbraTomeCount;
-		ComUmbraTome* umbraTomes;
-	};
+		uint volumeSetCount;
+		ComWorldVolumeSet* volumeSets;
+		uint volumeSet2Count;
+		ComWorldVolumeSet* volumeSets2;
+		uint umbraGateCount;
+		ComUmbraGate* umbraGates;
+	}; assert_sizeof(ComWorld, 0x88);
+	assert_offsetof(ComWorld, volumeSets, 0x60);
+	assert_offsetof(ComWorld, umbraGates, 0x80);
 
 	struct pathnode_t;
 
@@ -2698,7 +2733,7 @@ namespace zonetool::t7
 		uint debug_render_index_z;
 		uint debug_render_phase;
 		uint debugLineIndex;
-	};
+	}; assert_sizeof(GfxConfig_Probe, 268);
 
 	struct GfxReflectionProbe
 	{
@@ -2709,10 +2744,12 @@ namespace zonetool::t7
 		uint16_t firstBlend;
 		uint16_t numBlends;
 		GfxConfig_Probe config;
-		float exploderFade;
-		bool exploderDisabled;
+		// one per client slot, both indexed by the same slot (probe packer 0x141CBE570 in the
+		// client reads +312 + 4 * slot and +320 + slot)
+		float exploderFade[2];
+		bool exploderDisabled[2];
 		int umbraId;
-	};
+	}; assert_sizeof(GfxReflectionProbe, 328);
 
 	struct GfxConfig_ProbeBlend
 	{
@@ -2729,7 +2766,7 @@ namespace zonetool::t7
 		float cullRadius;
 		float evcomp;
 		bool negative;
-	};
+	}; assert_sizeof(GfxConfig_ProbeBlend, 604);
 
 	struct GfxReflectionProbeArray
 	{
@@ -3136,6 +3173,7 @@ namespace zonetool::t7
 		int baseIndex;
 	};
 
+	// 0x60 per the dedi's surface array loader (0x1401B3900); the bytes after decalSort are zero.
 	struct GfxSurface
 	{
 		srfTriangles_t tris;
@@ -3143,7 +3181,9 @@ namespace zonetool::t7
 		Material* material;
 		byte flags;
 		byte decalSort;
-	};
+		char __pad0[14];
+	}; assert_sizeof(GfxSurface, 0x60);
+	assert_offsetof(GfxSurface, material, 0x48);
 
 	struct GfxPackedPlacement
 	{
@@ -3412,9 +3452,11 @@ namespace zonetool::t7
 		int lightingQuality;
 		int umbraNumTomes;
 		GfxUmbraTome* umbraTomes;
+		// Load_GfxWorld (0x1401B42A0) reads the second tome count at +0x56C and the siege
+		// anim count at +0x578; the second tome count matches ComWorld's named volume sets.
+		bool umbraTomeIncludesLightsAndFx;
 		int umbraNumTomes2;
 		GfxUmbraTome* umbraTomes2;
-		bool umbraTomeIncludesLightsAndFx;
 		uint numSiegeAnims;
 		void* siegeAnims; //GfxSiegeAnimPtr* siegeAnims;
 		uint numSiegeAnimsAutoPlay;
@@ -3472,6 +3514,10 @@ namespace zonetool::t7
 	assert_offsetof(GfxWorld, unk, 496);
 	assert_offsetof(GfxWorld, unk2, 512);
 	assert_offsetof(GfxWorld, umbraTomes, 1376);
+	assert_offsetof(GfxWorld, umbraNumTomes2, 0x56C);
+	assert_offsetof(GfxWorld, umbraTomes2, 0x570);
+	assert_offsetof(GfxWorld, numSiegeAnims, 0x578);
+	assert_offsetof(GfxWorld, siegeAnims, 0x580);
 	assert_offsetof(GfxWorld, unk3, 1472);
 
 	struct GfxLightDef
@@ -3483,6 +3529,27 @@ namespace zonetool::t7
 		float2 scroll;
 		GfxImage* gfxImage;
 	};
+
+	// a serialized Havok object (hkai_main.cpp loads each with 0x1408710E0(data, size))
+	struct HavokBlob
+	{
+		unsigned int size;
+		char* data;
+	}; assert_sizeof(HavokBlob, 16);
+
+	// 0x68 bytes (size switch 0x14019F0B0); loaded by 0x140444F70 from "maps/<map>_navmesh"
+	struct NavMeshData
+	{
+		const char* name;
+		HavokBlob blobs[6];
+	}; assert_sizeof(NavMeshData, 0x68);
+
+	// 0x48 bytes; loaded by 0x1404450F0 from "maps/<map>_navvolume"
+	struct NavVolumeData
+	{
+		const char* name;
+		HavokBlob blobs[4];
+	}; assert_sizeof(NavVolumeData, 0x48);
 
 	union XAssetHeader
 	{
@@ -3622,14 +3689,16 @@ namespace zonetool::t7
 		MAX_XFILE_COUNT = 0xA,
 	};
 
+	// DB_LoadXAssets (0x1401D8740) steps through these 40 bytes at a time and reads the free flags at +12; BO3's own zone
+	// tables (0x1410C22C0...) hold 32-bit alloc and free flags at +8 and +12 and zeros after them
 	struct XZoneInfo
 	{
 		const char* name;
-		uint64_t allocFlags;
-		uint64_t freeFlags;
-		uint64_t allocSlot;
-		uint64_t freeSlot;
+		uint32_t allocFlags;
+		uint32_t freeFlags;
+		uint64_t unknown[3];
 	};
+	static_assert(sizeof(XZoneInfo) == 40);
 
 	struct XBlock
 	{
@@ -3672,7 +3741,7 @@ namespace zonetool::t7
 		XAsset asset;
 		byte zoneIndex;
 		bool inuse;
-		byte pad;
+		byte placeholder; // a reference to an asset that was not loaded, linked to a copy of the type's default (0x1401D4E20)
 		byte unloaded;
 		uint32_t nextHash;
 		uint32_t nextType;

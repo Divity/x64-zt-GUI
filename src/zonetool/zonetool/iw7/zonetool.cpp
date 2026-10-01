@@ -598,6 +598,8 @@ namespace zonetool::iw7
 
 		wait_for_database();
 
+		filesystem::set_fastfile(name);
+
 		globals.verify = true;
 		if (!load_zone(name, DB_LOAD_ASYNC, true))
 		{
@@ -940,34 +942,6 @@ namespace zonetool::iw7
 		//xanim_parts::secondary_anims.clear();
 	}
 
-	constexpr auto MOD_DEPLOY_DIR = "mods/AAE-v0.0.1";
-
-	void deploy_built_zone(const std::string& fastfile)
-	{
-		const auto built = fastfile + ".ff";
-
-		if (!utils::io::file_exists(built))
-		{
-			ZONETOOL_ERROR("Built zone \"%s\" not found, skipping deploy", built.data());
-			return;
-		}
-
-		try
-		{
-			std::filesystem::create_directories(MOD_DEPLOY_DIR);
-
-			const auto dest = std::string(MOD_DEPLOY_DIR) + "/mod.ff";
-			std::filesystem::copy_file(built, dest,
-				std::filesystem::copy_options::overwrite_existing);
-
-			ZONETOOL_INFO("Deployed \"%s\" -> \"%s\"", built.data(), dest.data());
-		}
-		catch (const std::exception& e)
-		{
-			ZONETOOL_ERROR("Could not deploy \"%s\": %s", built.data(), e.what());
-		}
-	}
-
 	void build_zone(const std::string& fastfile)
 	{
 		// make sure FS is correct.
@@ -1015,8 +989,6 @@ namespace zonetool::iw7
 		zone->build(buffer.get());
 
 		zonetool::taskbar::clear();
-
-		deploy_built_zone(fastfile);
 
 		ignore_assets.clear();
 		clear_asset_fields();

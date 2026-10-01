@@ -1,5 +1,6 @@
 #include <std_include.hpp>
 #include "zonetool/t7/converter/iw7/include.hpp"
+#include "zonetool/t7/converter/iw7/memory_probe.hpp"
 #include "zonetool/t7/boiii_weapondef.hpp"
 #include "weapon.hpp"
 #include "weapon_template.hpp"
@@ -61,55 +62,12 @@ namespace zonetool::t7
 
 				bool is_readable(const void* ptr, std::size_t size)
 				{
-					if (!ptr)
-					{
-						return false;
-					}
-
-					MEMORY_BASIC_INFORMATION mbi{};
-					if (!VirtualQuery(ptr, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT)
-					{
-						return false;
-					}
-
-					constexpr auto readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
-						PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-
-					if ((mbi.Protect & readable) == 0 || (mbi.Protect & PAGE_GUARD) != 0)
-					{
-						return false;
-					}
-
-					const auto* end = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
-					return static_cast<const char*>(ptr) + size <= end;
+					return probe::readable(ptr, size);
 				}
 
 				const char* safe_name(const char* name)
 				{
-					if (!is_readable(name, 1))
-					{
-						return nullptr;
-					}
-
-					MEMORY_BASIC_INFORMATION mbi{};
-					VirtualQuery(name, &mbi, sizeof(mbi));
-
-					const auto* end = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
-					for (const auto* it = name; it < end && (it - name) < 256; it++)
-					{
-						const auto c = static_cast<unsigned char>(*it);
-						if (!c)
-						{
-							return it > name ? name : nullptr;
-						}
-
-						if (c < 0x20 || c > 0x7E)
-						{
-							return nullptr;
-						}
-					}
-
-					return nullptr;
+					return probe::name(name);
 				}
 
 				template <typename T>

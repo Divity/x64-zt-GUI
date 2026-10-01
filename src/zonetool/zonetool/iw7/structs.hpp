@@ -5073,16 +5073,21 @@ namespace zonetool::iw7
 		char* livePath;
 		char* livePath2;
 		vec3_t probePosition;
-		unsigned short probeImageIndex;
+		unsigned short probeImageIndex; // the renderer reads the whole dword at +28 as the cube slice
 		char lodLevel;
 		char flags;
 		vec4_t probeRotation;
 		GfxReflectionProbeObb volumeObb;
 		float priority;
 		vec3_t feather;
+		// bit 0: no parallax projection, bit 2: set in the view's probe mask, sign bit: instance skipped
+		// (iw7_ship sub_E20580 packs the GPU record, sub_E1FA80 selects)
+		int volumeFlags;
 		vec3_t expandProjectionNeg;
 		vec3_t expandProjectionPos;
 	}; assert_sizeof(GfxReflectionProbeInstance, 152);
+	assert_offsetof(GfxReflectionProbeInstance, volumeFlags, 124);
+	assert_offsetof(GfxReflectionProbeInstance, expandProjectionPos, 140);
 
 	struct GfxRawTexture : GfxTexture
 	{

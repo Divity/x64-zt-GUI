@@ -12,8 +12,7 @@ namespace zonetool::iw7
 	public:
 		std::array<XStreamFile*, 4> image_stream_files;
 		std::array<std::optional<std::string>, 4> image_stream_blocks_paths;
-		std::array<std::optional<std::string>, 4> image_stream_blocks;
-		bool custom_streamed_image = false;	
+		bool custom_streamed_image = false;
 
 		bool is_iwi = false;
 

@@ -1,7 +1,9 @@
 #include <std_include.hpp>
 #include "zonetool/t7/converter/iw7/include.hpp"
+#include "zonetool/t7/converter/iw7/memory_probe.hpp"
 #include "material.hpp"
 #include "material_template.hpp"
+#include "gfximage.hpp"
 
 #include "zonetool/t7/functions.hpp"
 
@@ -42,55 +44,12 @@ namespace zonetool::t7
 
 				bool is_readable(const void* ptr)
 				{
-					MEMORY_BASIC_INFORMATION mbi{};
-					if (!VirtualQuery(ptr, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT)
-					{
-						return false;
-					}
-
-					constexpr auto readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
-						PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-
-					return (mbi.Protect & readable) != 0 && (mbi.Protect & PAGE_GUARD) == 0;
+					return probe::readable(ptr, 1);
 				}
 
 				const char* safe_name(const char* name)
 				{
-					if (!name)
-					{
-						return nullptr;
-					}
-
-					MEMORY_BASIC_INFORMATION mbi{};
-					if (!VirtualQuery(name, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT)
-					{
-						return nullptr;
-					}
-
-					constexpr auto readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
-						PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-
-					if ((mbi.Protect & readable) == 0 || (mbi.Protect & PAGE_GUARD) != 0)
-					{
-						return nullptr;
-					}
-
-					const auto* end = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
-					for (const auto* it = name; it < end && (it - name) < 256; it++)
-					{
-						const auto c = static_cast<unsigned char>(*it);
-						if (!c)
-						{
-							return it > name ? name : nullptr;
-						}
-
-						if (c < 0x20 || c > 0x7E)
-						{
-							return nullptr;
-						}
-					}
-
-					return nullptr;
+					return probe::name(name);
 				}
 
 				std::string get_suffix(const std::string& name)
@@ -165,12 +124,7 @@ namespace zonetool::t7
 
 				bool image_exists(const std::string& name)
 				{
-					if (zonetool::t7::DB_FindXAssetEntry(ASSET_TYPE_IMAGE, name.data(), false))
-					{
-						return true;
-					}
-
-					return std::filesystem::exists(filesystem::get_dump_path() + "images\\" + name + ".dds");
+					return gfximage::find_image(name) != nullptr || gfximage::image_dumped(name);
 				}
 
 				bool is_effect_material(const std::string& name, const Material* asset)
@@ -421,12 +375,26 @@ namespace zonetool::t7
 					return "el/"s + get_material_name(name);
 				}
 
-				if (is_emissive_material(asset))
-				{
-					return "mo/"s + get_material_name(name);
-				}
+				return model_material_name(name);
+			}
 
-				return "mo/"s + get_material_name(name);
+			std::string model_material_name(const std::string& bo3_name)
+			{
+				std::string folder;
+				const auto slash = bo3_name.find_last_of("/\\");
+				if (slash != std::string::npos)
+				{
+					folder = bo3_name.substr(0, slash);
+					for (auto& c : folder)
+					{
+						if (c == '/' || c == '\\')
+						{
+							c = '_';
+						}
+					}
+				}
+				const auto keep = !folder.empty() && folder != "mc";
+				return "mo/"s + (keep ? folder + "_" : ""s) + get_material_name(bo3_name);
 			}
 
 			void dump(Material* asset)
@@ -441,7 +409,7 @@ namespace zonetool::t7
 				if (!effect && is_emissive_material(asset))
 				{
 					const std::string techset = "mo_effectunlit_replace_lin_ct_nocast_mkhdr";
-					const auto name = "mo/"s + get_material_name(asset->name);
+					const auto name = model_material_name(asset->name);
 
 					std::string maps[MAP_COUNT];
 					collect_maps(asset, maps);
@@ -559,7 +527,7 @@ namespace zonetool::t7
 				}
 
 				const std::string techset = techset_name;
-				const auto name = (effect ? "el/"s : "mo/"s) + get_material_name(asset->name);
+				const auto name = effect ? "el/"s + get_material_name(asset->name) : model_material_name(asset->name);
 
 				ordered_json matdata;
 

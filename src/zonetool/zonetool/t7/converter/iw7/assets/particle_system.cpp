@@ -1,10 +1,37 @@
 #include <std_include.hpp>
 #include "zonetool/t7/converter/iw7/include.hpp"
+#include "zonetool/t7/converter/iw7/memory_probe.hpp"
 #include "particle_system.hpp"
 #include "material.hpp"
 
 #include "zonetool/t7/functions.hpp"
+#include "zonetool/t7/converter/iw7/map_common.hpp"
 #include "zonetool/iw7/assets/particle_system.hpp"
+
+// BO3 effects (FxEffectDef) as IW7 particle systems (ParticleSystemDef).
+//
+// BO3:
+// * visual state is sampled at N + 1 points over the particle's life (N = visStateIntervalCount), each a base and
+//   amplitude half (0x50); colour lerps between the halves, other fields are base + random x amplitude. Half layout:
+//   colour +0x00, rotationDelta +0x04, rotationTotal +0x08, size +0x0C / +0x10, scale +0x14, HDR value or light
+//   intensity +0x18, light radius +0x1C, spot cone in degrees +0x20.
+// * velocity samples (0x60: local then world) are N x lerp(k, k + 1) x 1000 units a second (0x140225730); gravity
+//   adds gravity x 0.8 units a second every millisecond.
+// * tails and lines are quads along the velocity (0x140201820 / 0x140201950): a tail sits size[1] behind the
+//   particle, a line size[1] ahead.
+// * sprite rgb is linear; light colours go through the sRGB table. A light's visual is a template (+8:
+//   GfxConfig_Light) whose colour, radius and cone the draw (0x140201EA0) overrides per particle.
+//
+// IW7:
+// * sprite shaders square texture x vertex colour, so colour curves carry the square root.
+// * state flags: 0x400 lit, 0x400000 colour graph, 0x1000000 emissive graph, 0x2000000 intensity graph,
+//   0x100 / 0x200 local / world velocity graph, 0x100000000 sprite.
+// * a tail (0xD095B0) is drawn only once a velocity component exceeds 0.001 units a second; m_tailLeading 0 puts
+//   the quad ahead of the particle, 1 behind it.
+// * INIT_ATLAS (0xD0F950): playRate, startFrame, loopCount (-1: forever), then two bytes: +20 random start frame,
+//   +21 play over life.
+// * an omni light's colour is rgb x size.y x 493.38132 with radius size.x (R_AddDynamicOmniLight), falling off as
+//   1 / d^2; BO3's falls off as min(1, dAtt^2 / d^2), so size.y = intensity x dAtt^2 / 493.38132.
 
 namespace zonetool::t7
 {
@@ -19,12 +46,14 @@ namespace zonetool::t7
 				struct t7_vis_state
 				{
 					unsigned char color[4];
-					float rotationDelta;
-					float rotationTotal;
+					float rotation_delta;
+					float rotation_total;
 					float size[2];
 					float scale;
-					float emission;
-					float unk[3];
+					float intensity; // sprites: the particle's HDR value; lights: intensity
+					float radius; // lights
+					float cone; // spot lights: full cone angle in degrees
+					float unk_24;
 				};
 				static_assert(sizeof(t7_vis_state) == 0x28);
 
@@ -53,14 +82,14 @@ namespace zonetool::t7
 
 				struct t7_trail_def
 				{
-					int scrollTimeMsec;
-					int repeatDist;
+					int scroll_time_msec;
+					int repeat_dist;
 					int unk_08;
-					float fadeInDist;
-					float fadeOutDist;
-					int vertCount;
+					float fade_in_dist;
+					float fade_out_dist;
+					int vert_count;
 					void* verts;
-					int indCount;
+					int ind_count;
 					int pad_24;
 					void* inds;
 				};
@@ -68,9 +97,6 @@ namespace zonetool::t7
 				enum t7_elem_flags : unsigned int
 				{
 					T7_FX_ELEM_SPAWN_RELATIVE_TO_EFFECT = 0x2,
-					T7_FX_ELEM_SPAWN_FRUSTUM_CULL = 0x4,
-					T7_FX_ELEM_RUNNER_USES_RAND_ROT = 0x8,
-					T7_FX_ELEM_SPAWN_OFFSET_NONE = 0x0,
 					T7_FX_ELEM_SPAWN_OFFSET_SPHERE = 0x10,
 					T7_FX_ELEM_SPAWN_OFFSET_CYLINDER = 0x20,
 					T7_FX_ELEM_SPAWN_OFFSET_MASK = 0x30,
@@ -80,15 +106,10 @@ namespace zonetool::t7
 					T7_FX_ELEM_RUN_RELATIVE_TO_OFFSET = 0xC0,
 					T7_FX_ELEM_RUN_RELATIVE_TO_CAMERA = 0x100,
 					T7_FX_ELEM_RUN_MASK = 0x1C0,
-					T7_FX_ELEM_DIE_ON_TOUCH = 0x200,
 					T7_FX_ELEM_DRAW_PAST_FOG = 0x400,
-					T7_FX_ELEM_DRAW_WITH_VIEWMODEL = 0x800,
-					T7_FX_ELEM_BLOCK_SIGHT = 0x1000,
-					T7_FX_ELEM_USE_COLLISION = 0x200000,
 					T7_FX_ELEM_HAS_VELOCITY_GRAPH_LOCAL = 0x1000000,
 					T7_FX_ELEM_HAS_VELOCITY_GRAPH_WORLD = 0x2000000,
 					T7_FX_ELEM_HAS_GRAVITY = 0x4000000,
-					T7_FX_ELEM_USE_MODEL_PHYSICS = 0x8000000,
 					T7_FX_ELEM_NONUNIFORM_SCALE = 0x10000000,
 				};
 
@@ -109,90 +130,33 @@ namespace zonetool::t7
 					T7_ELEM_TYPE_LENS_FLARE = 12,
 					T7_ELEM_TYPE_DECAL = 13,
 					T7_ELEM_TYPE_RUNNER = 14,
-					T7_ELEM_TYPE_UNKNOWN_15 = 15,
-					T7_ELEM_TYPE_UNKNOWN_16 = 16,
 				};
 
-				bool is_sprite_type(unsigned char type)
-				{
-					switch (type)
-					{
-					case T7_ELEM_TYPE_SPRITE_BILLBOARD:
-					case T7_ELEM_TYPE_SPRITE_ORIENTED:
-					case T7_ELEM_TYPE_SPRITE_ROTATED:
-					case T7_ELEM_TYPE_TAIL:
-					case T7_ELEM_TYPE_LINE:
-					case T7_ELEM_TYPE_TRAIL:
-					case T7_ELEM_TYPE_CLOUD:
-						return true;
-					default:
-						return false;
-					}
-				}
+				// BO3's atlas behaviour bits (FxElemAtlas.behavior, evaluated by 0x140207A40): the start frame (0 index,
+				// 1 random, 2 the element's sequence, 3 index within a range of indexRange frames), play over the
+				// particle's life, loop only loopCount times, blend between frames, frames reversed, atlas used at all
+				constexpr unsigned char atlas_start_mask = 0x3;
+				constexpr unsigned char atlas_start_range = 0x3;
+				constexpr unsigned char atlas_play_over_life = 0x4;
+				constexpr unsigned char atlas_loop_only_n_times = 0x8;
+				constexpr unsigned char atlas_reverse = 0x20;
+				constexpr unsigned char atlas_enabled = 0x80;
 
-				bool is_convertible_type(unsigned char type)
-				{
-					if (is_sprite_type(type))
-					{
-						return true;
-					}
+				// IW7 state flags (see the header comment)
+				constexpr unsigned __int64 state_lit = 0x400;
+				constexpr unsigned __int64 state_emissive_graph = 0x1000000;
 
-					switch (type)
-					{
-					case T7_ELEM_TYPE_MODEL:
-					case T7_ELEM_TYPE_OMNI_LIGHT:
-					case T7_ELEM_TYPE_DECAL:
-					case T7_ELEM_TYPE_RUNNER:
-						return true;
-					default:
-						return false;
-					}
-				}
+				// R_AddDynamicOmniLight: an effect light's colour is rgb x size.y x this
+				constexpr float omni_light_unit = 493.38132f;
 
 				bool is_readable(const void* ptr, std::size_t size)
 				{
-					if (!ptr)
-					{
-						return false;
-					}
-
-					MEMORY_BASIC_INFORMATION mbi{};
-					if (!VirtualQuery(ptr, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT)
-					{
-						return false;
-					}
-
-					constexpr auto readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
-						PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-					if (!(mbi.Protect & readable) || (mbi.Protect & PAGE_GUARD))
-					{
-						return false;
-					}
-
-					const auto* end = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
-					return static_cast<const char*>(ptr) + size <= end;
+					return probe::readable(ptr, size);
 				}
 
 				const char* safe_name(const char* name)
 				{
-					if (!is_readable(name, 1))
-					{
-						return nullptr;
-					}
-
-					MEMORY_BASIC_INFORMATION mbi{};
-					VirtualQuery(name, &mbi, sizeof(mbi));
-
-					const auto* end = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
-					for (const auto* it = name; it < end && (it - name) < 256; it++)
-					{
-						if (!*it)
-						{
-							return it == name ? nullptr : name;
-						}
-					}
-
-					return nullptr;
+					return probe::terminated(name);
 				}
 
 				const char* asset_name(const void* asset)
@@ -201,1952 +165,1403 @@ namespace zonetool::t7
 					{
 						return nullptr;
 					}
-
 					return safe_name(*static_cast<const char* const*>(asset));
 				}
 
 				template <typename T>
-				T* alias_asset(const char* name, utils::memory::allocator& allocator)
+				T* alias_asset(const std::string& name, utils::memory::allocator& allocator)
 				{
-					if (!name)
-					{
-						return nullptr;
-					}
-
 					const auto stub = allocator.allocate<T>();
-					stub->name = name;
+					stub->name = allocator.duplicate_string(name);
 					return stub;
 				}
 
-				i7::Material* material_alias(Material* material, utils::memory::allocator& allocator)
+				bool is_sprite_type(const unsigned char type)
 				{
-					if (!is_readable(material, sizeof(void*)))
-					{
-						return nullptr;
-					}
-
-					Material* full = material;
-					const auto* stub_name = asset_name(material);
-					if (stub_name)
-					{
-						const auto* entry = zonetool::t7::DB_FindXAssetEntry(
-							zonetool::t7::ASSET_TYPE_MATERIAL, stub_name, false);
-						if (entry && is_readable(entry->asset.header.material, sizeof(void*)))
-						{
-							full = entry->asset.header.material;
-						}
-					}
-
-					const auto name = zonetool::t7::converter::iw7::material::get_converted_name(full);
-					if (name.empty())
-					{
-						return nullptr;
-					}
-
-					return alias_asset<i7::Material>(allocator.duplicate_string(name), allocator);
+					return type <= T7_ELEM_TYPE_CLOUD;
 				}
 
-				unsigned int convert_elem_type(const FxElemDef* elem)
+				bool is_light_type(const unsigned char type)
 				{
-					switch (elem->elemType)
-					{
-					case T7_ELEM_TYPE_SPRITE_BILLBOARD: return i7::PARTICLE_ELEMENT_TYPE_BILLBOARD_SPRITE;
-					case T7_ELEM_TYPE_SPRITE_ORIENTED:  return i7::PARTICLE_ELEMENT_TYPE_ORIENTED_SPRITE;
-					case T7_ELEM_TYPE_SPRITE_ROTATED:   return i7::PARTICLE_ELEMENT_TYPE_ORIENTED_SPRITE;
-					case T7_ELEM_TYPE_TAIL:             return i7::PARTICLE_ELEMENT_TYPE_TAIL;
-					case T7_ELEM_TYPE_LINE:
-						return (elem->flags & (T7_FX_ELEM_HAS_VELOCITY_GRAPH_LOCAL |
-							T7_FX_ELEM_HAS_VELOCITY_GRAPH_WORLD))
-							? i7::PARTICLE_ELEMENT_TYPE_TAIL
-							: i7::PARTICLE_ELEMENT_TYPE_BILLBOARD_SPRITE;
-					case T7_ELEM_TYPE_TRAIL:            return i7::PARTICLE_ELEMENT_TYPE_GEO_TRAIL;
-					case T7_ELEM_TYPE_CLOUD:            return i7::PARTICLE_ELEMENT_TYPE_CLOUD;
-					case T7_ELEM_TYPE_MODEL:            return i7::PARTICLE_ELEMENT_TYPE_MODEL;
-					case T7_ELEM_TYPE_OMNI_LIGHT:       return i7::PARTICLE_ELEMENT_TYPE_LIGHT_OMNI;
-					case T7_ELEM_TYPE_SPOT_LIGHT:       return i7::PARTICLE_ELEMENT_TYPE_LIGHT_SPOT;
-					case T7_ELEM_TYPE_DECAL:            return i7::PARTICLE_ELEMENT_TYPE_DECAL;
-					case T7_ELEM_TYPE_RUNNER:           return i7::PARTICLE_ELEMENT_TYPE_RUNNER;
-
-					default:                            return i7::PARTICLE_ELEMENT_TYPE_BILLBOARD_SPRITE;
-					}
+					return type == T7_ELEM_TYPE_OMNI_LIGHT || type == T7_ELEM_TYPE_SPOT_LIGHT;
 				}
 
-				enum class sample_value_type
+				float srgb_decode(const float c)
 				{
-					base,
-					amplitude,
+					return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+				}
+
+				// An element converts whole or, for a spot light aimed away from the effect's axis, as two parts: IW7 aims a
+				// particle spot light along its effect's axis (0x140D08130), so stock effects use a runner turned by
+				// INIT_ROTATION_3D whose child effect holds the light.
+				enum class part
+				{
+					whole,
+					spot_runner,
+					spot_light,
 				};
-
-				struct min_max_curve_sample
-				{
-					sample_value_type min_type{};
-					int min_index{};
-					float min_comp{ FLT_MAX };
-
-					sample_value_type max_type{};
-					int max_index{};
-					float max_comp{ -FLT_MAX };
-
-					float get_abs_max() const
-					{
-						auto max = this->max_comp;
-						const auto abs = std::abs(this->min_comp);
-						if (abs > max)
-						{
-							max = abs;
-						}
-						return max;
-					}
-				};
-
-				void get_min_max_for_sample(min_max_curve_sample& sample, float comp_base, float comp_ampl, int index)
-				{
-					if (comp_base < sample.min_comp)
-					{
-						sample.min_index = index;
-						sample.min_type = sample_value_type::base;
-						sample.min_comp = comp_base;
-					}
-
-					if (comp_base > sample.max_comp)
-					{
-						sample.max_index = index;
-						sample.max_type = sample_value_type::base;
-						sample.max_comp = comp_base;
-					}
-
-					if (comp_ampl < sample.min_comp)
-					{
-						sample.min_index = index;
-						sample.min_type = sample_value_type::amplitude;
-						sample.min_comp = comp_ampl;
-					}
-
-					if (comp_ampl > sample.max_comp)
-					{
-						sample.max_index = index;
-						sample.max_type = sample_value_type::amplitude;
-						sample.max_comp = comp_ampl;
-					}
-				}
-
-				float get_velocity_scale(const min_max_curve_sample& mm_sample, float scalar)
-				{
-					const auto min = mm_sample.min_comp;
-					const auto max = mm_sample.max_comp;
-
-					if (min != 0.0f || max != 0.0f)
-					{
-						auto abs = std::abs(min);
-						if (max > abs)
-						{
-							abs = max;
-						}
-
-						return abs / scalar * 2.0f;
-					}
-
-					return 0.0f;
-				}
-
-				enum class vel_space
-				{
-					local,
-					world,
-				};
-
-				float get_velocity_value(vel_space space, int dir, sample_value_type kind,
-					const t7_vel_sample* samples, int index)
-				{
-					const auto& frame = (space == vel_space::local) ? samples[index].local : samples[index].world;
-					return (kind == sample_value_type::base) ? frame.velocity_base[dir] : frame.velocity_amplitude[dir];
-				}
-
-				void get_largest_velocity_sample_value(vel_space space, int dir,
-					const t7_vel_sample* vel_samples, int index, min_max_curve_sample& mm_sample)
-				{
-					const auto vel_base = get_velocity_value(space, dir, sample_value_type::base, vel_samples, index);
-					const auto vel_amp = get_velocity_value(space, dir, sample_value_type::amplitude, vel_samples, index);
-
-					get_min_max_for_sample(mm_sample, vel_base, vel_amp, index);
-				}
-
-				void calculate_velocity_scales(float* local_scales, float* world_scales,
-					const t7_vel_sample* vel_samples, int vel_samples_count, float sample_scalar)
-				{
-					min_max_curve_sample local_mm[3]{};
-					min_max_curve_sample world_mm[3]{};
-
-					for (auto s = 0; s < vel_samples_count; s++)
-					{
-						for (auto dir = 0; dir < 3; dir++)
-						{
-							get_largest_velocity_sample_value(vel_space::local, dir, vel_samples, s, local_mm[dir]);
-							get_largest_velocity_sample_value(vel_space::world, dir, vel_samples, s, world_mm[dir]);
-						}
-					}
-
-					for (auto dir = 0; dir < 3; dir++)
-					{
-						local_scales[dir] = get_velocity_scale(local_mm[dir], sample_scalar);
-						world_scales[dir] = get_velocity_scale(world_mm[dir], sample_scalar);
-					}
-				}
-
-				void calculate_inv_time_delta(i7::ParticleCurveDef* curves, unsigned int curves_count)
-				{
-					for (auto i = 0u; i < curves_count; i++)
-					{
-						float prev_time = 0.0f;
-
-						for (auto j = 1; j < curves[i].numControlPoints; j++)
-						{
-							curves[i].controlPoints[j].invTimeDelta = 1.0f / (curves[i].controlPoints[j].time - prev_time);
-							prev_time = curves[i].controlPoints[j].time;
-						}
-					}
-				}
-
-				void fixup_randomization_flags(const i7::ParticleCurveDef& curve_base,
-					const i7::ParticleCurveDef& curve_ampl, unsigned int* flags)
-				{
-					if (curve_base.numControlPoints != curve_ampl.numControlPoints ||
-						curve_base.scale != curve_ampl.scale)
-					{
-						return;
-					}
-
-					for (auto i = 0; i < curve_base.numControlPoints; i++)
-					{
-						if (curve_base.controlPoints[i].value != curve_ampl.controlPoints[i].value)
-						{
-							*flags |= i7::PARTICLE_MODULE_FLAG_RANDOMIZE_BETWEEN_CURVES;
-						}
-					}
-				}
-
-				void set_default_size_values(i7::ParticleCurveDef& curve)
-				{
-					curve.scale = 0.0f;
-
-					curve.controlPoints[0].time = 0.0f;
-					curve.controlPoints[0].value = 1.0f;
-
-					curve.controlPoints[1].time = 1.0f;
-					curve.controlPoints[1].value = 1.0f;
-				}
-
-				void set_default_velocity_values(i7::ParticleCurveDef& curve)
-				{
-					curve.scale = 1.0f;
-
-					curve.controlPoints[0].time = 0.0f;
-					curve.controlPoints[0].value = 0.0f;
-
-					curve.controlPoints[1].time = 1.0f;
-					curve.controlPoints[1].value = 0.0f;
-				}
 
 				struct convert_context
 				{
-					utils::memory::allocator* allocator;
-					unsigned int system_flags;
-					unsigned __int64 state_flags;
-					unsigned int emitter_flags;
-					int test_module_index;
-					int elem_index;
-					const char* fx_name;
+					utils::memory::allocator* allocator = nullptr;
+					const references* refs = nullptr;
+					const FxEffectDef* effect = nullptr;
+					const FxElemDef* elem = nullptr;
+					int elem_index = 0;
+					unsigned int system_flags = 0;
+					unsigned __int64 state_flags = 0;
+					unsigned int emitter_flags = 0;
+					int test_module_index = 0;
+					// a sprite element's material and how it shades (set by the material module)
+					bool has_material = false;
+					effect_material::converted material{};
+					bool frame_blend = false;
+					part element_part = part::whole;
+					std::string light_child; // spot_runner: the child effect holding the light
 				};
 
-				struct particle_material_remap
+				// ---- samples and curves ---------------------------------------------------------------------
+
+				struct vis_samples
 				{
-					const char* source;
-					const char* target;
+					const t7_vis_sample* samples = nullptr;
+					int count = 0; // N + 1
+					int intervals() const
+					{
+						return std::max(1, this->count - 1);
+					}
 				};
 
-				constexpr particle_material_remap idgun_material_remaps[] =
-				{
-					{ "gfx_debris_trash_multiple_em", "eq/vfx_debris_brick_atlas" },
-					{ "gfx_distort_ring_hvy", "eq/vfx_dist_blast_wave_loop_sxy_30" },
-					{ "gfx_distort_ring_ripple", "eq/vfx_dist_blast_wave_loop_sxy_30" },
-					{ "gfx_dust_gen_lit", "eq/vfx_vol_dust_rotorwash_anim_loop" },
-					{ "gfx_fog_slow_md_anim_lit", "eq/vfx_vol_smk_wispy_swirl_lg" },
-					{ "gfx_fog_slow_sm_anim_lit", "eq/vfx_vol_smk_wispy_swirl" },
-					{ "gfx_smk_puff_light_varied", "eq/vfx_vol_smk_wispy_swirl" },
-					{ "gfx_shockwave_elec_anim_em_i2048", "eq/vfx_energy_shockwave_04_en" },
-					{ "gfx_spark_blink_anim_em", "eq/vfx_pyro_spark_single" },
-				};
-
-				const char* idgun_invalid_material_fallback(const convert_context& ctx)
-				{
-					const std::string effect_name = ctx.fx_name ? ctx.fx_name : "";
-					if (effect_name.find("fx_idgun_vortex_explo") != std::string::npos)
-					{
-						if (ctx.elem_index == 1)
-						{
-							return "el/gfx_water_splash_em";
-						}
-						if (ctx.elem_index == 7 || ctx.elem_index == 12)
-						{
-							return "el/gfx_fire_flame_base_2_anim_em_i1024";
-						}
-					}
-					else if (effect_name.find("fx_idgun_vortex") != std::string::npos &&
-						(ctx.elem_index == 3 || ctx.elem_index == 4))
-					{
-						return "eq/vfx_debris_brick_atlas";
-					}
-					else if (effect_name.find("fx_idgun_projectile") != std::string::npos &&
-						ctx.elem_index == 4)
-					{
-						return "el/gfx_fire_flame_base_2_anim_em_i1024";
-					}
-					else if (effect_name.find("fx_idgun_muz_") != std::string::npos)
-					{
-						return "el/gfx_gel_splat_spread_em";
-					}
-					else if (effect_name.find("fx_idgun_hole_") != std::string::npos)
-					{
-						return "el/gfx_debris_clump_em";
-					}
-					else if (effect_name.find("fx_idgun_ug_hole_") != std::string::npos)
-					{
-						return "el/gfx_debris_clump_em";
-					}
-
-					return nullptr;
-				}
-
-				float converted_effect_size_scale(const convert_context& ctx)
-				{
-					const std::string effect_name = ctx.fx_name ? ctx.fx_name : "";
-					const bool idgun_world_effect = effect_name.find("fx_idgun_") != std::string::npos &&
-						effect_name.find("fx_idgun_muz_") == std::string::npos &&
-						effect_name.find("fx_idgun_projectile") == std::string::npos;
-
-					return idgun_world_effect ? 0.2675f : 1.0f;
-				}
-
-				bool element_uses_material(FxElemDef* elem, const char* expected)
-				{
-					if (!is_sprite_type(elem->elemType)) return false;
-					const auto matches = [expected](Material* material)
-					{
-						const auto* name = asset_name(material);
-						if (!name) return false;
-						std::string basename = name;
-						const auto separator = basename.find_last_of("/\\");
-						if (separator != std::string::npos) basename = basename.substr(separator + 1);
-						return basename == expected;
-					};
-
-					if (elem->visualCount > 1 && is_readable(elem->visuals.array,
-						sizeof(FxElemVisuals) * elem->visualCount))
-					{
-						for (auto i = 0; i < elem->visualCount; i++)
-						{
-							if (matches(elem->visuals.array[i].material)) return true;
-						}
-						return false;
-					}
-
-					return elem->visualCount == 1 && matches(elem->visuals.instance.material);
-				}
-
-				bool invalid_particle_material_visual(const convert_context& ctx, Material* material)
-				{
-					const auto* source_name_ptr = asset_name(material);
-					if (!source_name_ptr)
-					{
-						return true;
-					}
-
-					std::string source_name = source_name_ptr;
-					const auto source_separator = source_name.find_last_of("/\\");
-					if (source_separator != std::string::npos)
-					{
-						source_name = source_name.substr(source_separator + 1);
-					}
-
-					std::string effect_name = ctx.fx_name ? ctx.fx_name : "";
-					const auto effect_separator = effect_name.find_last_of("/\\");
-					if (effect_separator != std::string::npos)
-					{
-						effect_name = effect_name.substr(effect_separator + 1);
-					}
-
-					return source_name == effect_name || source_name.starts_with("new");
-				}
-
-				bool element_has_resolvable_material_visual(const convert_context& ctx, FxElemDef* elem)
-				{
-					if (!is_sprite_type(elem->elemType) || !elem->visualCount)
-					{
-						return false;
-					}
-
-					const auto resolvable = [&ctx](Material* material)
-					{
-						if (!invalid_particle_material_visual(ctx, material))
-						{
-							return true;
-						}
-
-						return idgun_invalid_material_fallback(ctx) != nullptr;
-					};
-
-					if (elem->visualCount > 1)
-					{
-						if (!is_readable(elem->visuals.array, sizeof(FxElemVisuals) * elem->visualCount))
-						{
-							return false;
-						}
-
-						for (auto i = 0; i < elem->visualCount; i++)
-						{
-							if (resolvable(elem->visuals.array[i].material))
-							{
-								return true;
-							}
-						}
-
-						return false;
-					}
-
-					return resolvable(elem->visuals.instance.material);
-				}
-
-				i7::Material* particle_material_alias(const convert_context& ctx, Material* material,
-					utils::memory::allocator& allocator)
-				{
-					const std::string effect_name = ctx.fx_name ? ctx.fx_name : "";
-					const auto* source_name_ptr = asset_name(material);
-					if (source_name_ptr)
-					{
-						std::string source_name = source_name_ptr;
-						const auto separator = source_name.find_last_of("/\\");
-						if (separator != std::string::npos)
-						{
-							source_name = source_name.substr(separator + 1);
-						}
-
-						if (effect_name.find("fx_idgun") != std::string::npos)
-						{
-							for (const auto& remap : idgun_material_remaps)
-							{
-								if (source_name == remap.source)
-								{
-									return alias_asset<i7::Material>(allocator.duplicate_string(remap.target), allocator);
-								}
-							}
-						}
-
-						std::string effect_base = effect_name;
-						const auto effect_separator = effect_base.find_last_of("/\\");
-						if (effect_separator != std::string::npos)
-						{
-							effect_base = effect_base.substr(effect_separator + 1);
-						}
-
-						if (source_name == effect_base || source_name.starts_with("new"))
-						{
-							if (const auto* fallback = idgun_invalid_material_fallback(ctx))
-							{
-								return alias_asset<i7::Material>(allocator.duplicate_string(fallback), allocator);
-							}
-
-							ZONETOOL_WARNING("vfx \"%s\" element %i: dropping invalid material visual \"%s\"",
-								ctx.fx_name, ctx.elem_index, source_name.c_str());
-							return nullptr;
-						}
-					}
-
-					return material_alias(material, allocator);
-				}
-
-				const t7_vis_sample* get_vis_samples(FxElemDef* elem)
+				vis_samples get_vis_samples(const FxElemDef* elem)
 				{
 					const auto count = elem->visStateIntervalCount + 1;
 					const auto* samples = reinterpret_cast<const t7_vis_sample*>(elem->visSamples);
-					return is_readable(samples, sizeof(t7_vis_sample) * count) ? samples : nullptr;
+					if (!is_readable(samples, sizeof(t7_vis_sample) * count))
+					{
+						return {};
+					}
+					return { samples, count };
 				}
 
-				const t7_vel_sample* get_vel_samples(FxElemDef* elem)
+				struct vel_samples
+				{
+					const t7_vel_sample* samples = nullptr;
+					int count = 0;
+					int intervals() const
+					{
+						return std::max(1, this->count - 1);
+					}
+				};
+
+				vel_samples get_vel_samples(const FxElemDef* elem)
 				{
 					const auto count = elem->velIntervalCount + 1;
 					const auto* samples = reinterpret_cast<const t7_vel_sample*>(elem->velSamples);
-					return is_readable(samples, sizeof(t7_vel_sample) * count) ? samples : nullptr;
+					if (!is_readable(samples, sizeof(t7_vel_sample) * count))
+					{
+						return {};
+					}
+					return { samples, count };
 				}
 
-				void generate_color_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				float largest_magnitude(const std::vector<float>& values)
 				{
-					const auto* vis = get_vis_samples(elem);
-					if (!vis)
+					auto scale = 0.0f;
+					for (const auto v : values)
+					{
+						scale = std::max(scale, std::fabs(v));
+					}
+					return scale;
+				}
+
+				// An IW7 curve through `values` spread evenly over the particle's life (a single value is held for its
+				// whole life): points times `scale` (0: the largest magnitude, 1 when every value is 0)
+				i7::ParticleCurveDef make_curve(convert_context& ctx, const std::vector<float>& values, float scale = 0.0f)
+				{
+					i7::ParticleCurveDef curve{};
+					const auto count = std::max<std::size_t>(2, values.size());
+					if (scale == 0.0f)
+					{
+						scale = largest_magnitude(values);
+					}
+					if (scale == 0.0f)
+					{
+						scale = 1.0f;
+					}
+					curve.scale = scale;
+					curve.numControlPoints = static_cast<int>(count);
+					curve.controlPoints = ctx.allocator->allocate_array<i7::ParticleCurveControlPointDef>(count);
+					for (auto i = 0u; i < count; i++)
+					{
+						auto& p = curve.controlPoints[i];
+						p.time = static_cast<float>(i) / static_cast<float>(count - 1);
+						p.value = (values.size() == 1 ? values[0] : values[i]) / scale;
+						p.invTimeDelta = i ? 1.0f / (p.time - curve.controlPoints[i - 1].time) : 0.0f;
+					}
+					return curve;
+				}
+
+				// min and max curves over the same points with the same scale (IW7 randomises between the two); `scale` as
+				// make_curve's, shared by both
+				void make_curve_pair(convert_context& ctx, const std::vector<float>& min, const std::vector<float>& max,
+					i7::ParticleCurveDef& out_min, i7::ParticleCurveDef& out_max, unsigned int& module_flags, float scale = 0.0f)
+				{
+					if (scale == 0.0f)
+					{
+						scale = std::max(largest_magnitude(min), largest_magnitude(max));
+					}
+					out_min = make_curve(ctx, min, scale);
+					out_max = make_curve(ctx, max, scale);
+					if (min != max)
+					{
+						module_flags |= i7::PARTICLE_MODULE_FLAG_RANDOMIZE_BETWEEN_CURVES;
+					}
+				}
+
+				i7::ParticleModuleDef new_module(const i7::ParticleModuleType type)
+				{
+					i7::ParticleModuleDef module{};
+					module.moduleType = type;
+					module.moduleData.moduleBase.type = type;
+					module.moduleData.moduleBase.m_flags = 0;
+					return module;
+				}
+
+				// ---- update modules ------------------------------------------------------------------------
+
+				// colour: sprites square it (square roots), distortion multiplies the scene by it (as is), lights take it
+				// through BO3's sRGB table
+				void generate_color_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					const auto vis = get_vis_samples(ctx.elem);
+					if (!vis.samples)
 					{
 						return;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_COLOR_GRAPH;
-					auto& module_data = module.moduleData.colorGraph;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.firstCurve = false;
-					module_data.m_modulateColorByAlpha = false;
-
-					const auto sample_count = elem->visStateIntervalCount + 1;
-					const auto sample_size = 1.0f / std::max(1, sample_count - 1);
-
-					for (auto i = 0; i < 8; i++)
+					const auto light = is_light_type(ctx.elem->elemType);
+					const auto distortion = ctx.has_material && ctx.material.shade == effect_material::shading::distortion;
+					const auto sprite = is_sprite_type(ctx.elem->elemType) && !distortion;
+					const auto channel = [&](const unsigned char byte, const int c)
 					{
-						module_data.m_curves[i].numControlPoints = sample_count;
-						module_data.m_curves[i].controlPoints =
-							ctx.allocator->allocate_array<i7::ParticleCurveControlPointDef>(sample_count);
-						module_data.m_curves[i].scale = 1.0f;
-					}
-
-					for (auto i = 0; i < sample_count; i++)
-					{
-						const auto& base = vis[i].base.color;
-						const auto& ampl = vis[i].amplitude.color;
-
-						module_data.m_curves[0].controlPoints[i].value = base[2] / 255.0f;
-						module_data.m_curves[1].controlPoints[i].value = base[1] / 255.0f;
-						module_data.m_curves[2].controlPoints[i].value = base[0] / 255.0f;
-						module_data.m_curves[3].controlPoints[i].value = base[3] / 255.0f;
-
-						module_data.m_curves[4].controlPoints[i].value =
-							std::min(255, static_cast<int>(base[2]) + static_cast<int>(ampl[2])) / 255.0f;
-						module_data.m_curves[5].controlPoints[i].value =
-							std::min(255, static_cast<int>(base[1]) + static_cast<int>(ampl[1])) / 255.0f;
-						module_data.m_curves[6].controlPoints[i].value =
-							std::min(255, static_cast<int>(base[0]) + static_cast<int>(ampl[0])) / 255.0f;
-						module_data.m_curves[7].controlPoints[i].value =
-							std::min(255, static_cast<int>(base[3]) + static_cast<int>(ampl[3])) / 255.0f;
-
-						for (auto j = 0; j < 8; j++)
+						const auto v = byte / 255.0f;
+						if (c == 3)
 						{
-							module_data.m_curves[j].controlPoints[i].time = sample_size * i;
+							return v;
 						}
+						return light ? srgb_decode(v) : (sprite ? std::sqrt(v) : v);
+					};
+
+					auto module = new_module(i7::PARTICLE_MODULE_COLOR_GRAPH);
+					auto& data = module.moduleData.colorGraph;
+					for (auto c = 0; c < 4; c++)
+					{
+						std::vector<float> min, max;
+						for (auto i = 0; i < vis.count; i++)
+						{
+							min.push_back(channel(vis.samples[i].base.color[c], c));
+							max.push_back(channel(vis.samples[i].amplitude.color[c], c));
+						}
+						// stock colour curves are all scaled by 1
+						make_curve_pair(ctx, min, max, data.m_curves[c], data.m_curves[c + 4], data.m_flags, 1.0f);
 					}
-
-					calculate_inv_time_delta(module_data.m_curves, 8);
-
-					fixup_randomization_flags(module_data.m_curves[0], module_data.m_curves[4], &module_data.m_flags);
-					fixup_randomization_flags(module_data.m_curves[1], module_data.m_curves[5], &module_data.m_flags);
-					fixup_randomization_flags(module_data.m_curves[2], module_data.m_curves[6], &module_data.m_flags);
-					fixup_randomization_flags(module_data.m_curves[3], module_data.m_curves[7], &module_data.m_flags);
-
 					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_COLOR;
-
 					modules.push_back(module);
 				}
 
-				void generate_intensity_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				// The per-particle emissive scale an em / emm material reads. BO3 emits colour x vertex rgb x mask x
+				// alpha^2 x hdrScale x HDR value; IW7's emm emits mask x (colour x vertex rgb)^2 x this (so alpha^2 x HDR),
+				// its em alpha x emissive map^2 x this (so alpha x grey x HDR).
+				void generate_emissive_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
 				{
-					const auto* vis = get_vis_samples(elem);
-					if (!vis)
+					if (!ctx.has_material || (ctx.material.shade != effect_material::shading::emissive_colour &&
+						ctx.material.shade != effect_material::shading::emissive_mask))
 					{
 						return;
 					}
-
-					const auto sample_count = elem->visStateIntervalCount + 1;
-					float intensity_scale = 0.0f;
-					for (auto i = 0; i < sample_count; i++)
-					{
-						const auto value_min = std::max(0.0f, vis[i].base.emission);
-						const auto value_max = std::max(0.0f, vis[i].base.emission + vis[i].amplitude.emission);
-						intensity_scale = std::max(intensity_scale, std::max(value_min, value_max));
-					}
-
-					if (intensity_scale <= 0.0f || !std::isfinite(intensity_scale))
+					const auto vis = get_vis_samples(ctx.elem);
+					if (!vis.samples)
 					{
 						return;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INTENSITY_GRAPH;
-					auto& module_data = module.moduleData.intensityGraph;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-					module_data.firstCurve = false;
-
-					const auto sample_step = 1.0f / std::max(1, sample_count - 1);
-					for (auto curve = 0; curve < 2; curve++)
+					// BO3 applies hdrScale only on its compute sprite path (0x140205AA0: a compute visual, type 5 or below,
+					// neither flag 0x1000 nor 0x20000000); the vertex path (0x140206A80) uses the sample alone.
+					const auto compute_path = (static_cast<unsigned int>(ctx.elem->flags) & 0x20001000u) == 0 &&
+						ctx.elem->elemType <= T7_ELEM_TYPE_TRAIL && ctx.elem->computeVisuals.instance.anonymous != nullptr;
+					const auto hdr_scale = compute_path ? ctx.elem->hdrScale : 1.0f;
+					const auto emissive = [&](const t7_vis_state& colour_end, const float hdr)
 					{
-						module_data.m_curves[curve].numControlPoints = sample_count;
-						module_data.m_curves[curve].controlPoints =
-							ctx.allocator->allocate_array<i7::ParticleCurveControlPointDef>(sample_count);
-						module_data.m_curves[curve].scale = intensity_scale;
-					}
-
-					for (auto i = 0; i < sample_count; i++)
+						const auto a = colour_end.color[3] / 255.0f;
+						const auto particle_hdr = ctx.material.old_hdr_scale ? 1.0f : hdr * hdr_scale;
+						if (ctx.material.shade == effect_material::shading::emissive_mask)
+						{
+							return a * a * particle_hdr;
+						}
+						return a * (colour_end.color[0] / 255.0f) * particle_hdr;
+					};
+					std::vector<float> min, max;
+					for (auto i = 0; i < vis.count; i++)
 					{
-						const auto value_min = std::max(0.0f, vis[i].base.emission);
-						const auto value_max = std::max(0.0f, vis[i].base.emission + vis[i].amplitude.emission);
-
-						module_data.m_curves[0].controlPoints[i].time = sample_step * i;
-						module_data.m_curves[0].controlPoints[i].value = value_min / intensity_scale;
-						module_data.m_curves[1].controlPoints[i].time = sample_step * i;
-						module_data.m_curves[1].controlPoints[i].value = value_max / intensity_scale;
+						const auto& s = vis.samples[i];
+						min.push_back(emissive(s.base, s.base.intensity));
+						max.push_back(emissive(s.amplitude, s.base.intensity + s.amplitude.intensity));
 					}
-
-					calculate_inv_time_delta(module_data.m_curves, 2);
-					fixup_randomization_flags(module_data.m_curves[0], module_data.m_curves[1],
-						&module_data.m_flags);
-
-					const std::string effect_name = ctx.fx_name ? ctx.fx_name : "";
-					if (effect_name.find("fx_idgun_") != std::string::npos &&
-						element_uses_material(elem, "gfx_shockwave_elec_anim_em_i2048"))
-					{
-						for (auto& curve : module_data.m_curves) curve.scale *= 2.0f;
-					}
-
-					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_INTENSITY_CURVE;
+					auto module = new_module(i7::PARTICLE_MODULE_EMISSIVE_GRAPH);
+					auto& data = module.moduleData.emissiveGraph;
+					data.firstCurve = false;
+					make_curve_pair(ctx, min, max, data.m_curves[0], data.m_curves[1], data.m_flags);
+					ctx.state_flags |= state_emissive_graph;
 					modules.push_back(module);
 				}
 
-				void generate_size_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				// Sizes are absolute (INIT_ATTRIBUTES keeps stock's 10). Sprites: width size[0], height size[1] (size[0]
+				// without non-uniform scale); models: scale on every axis; decals: size[0]; lights: radius and intensity.
+				void generate_size_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
 				{
-					const auto* vis = get_vis_samples(elem);
-					if (!vis)
+					const auto vis = get_vis_samples(ctx.elem);
+					if (!vis.samples)
 					{
 						return;
 					}
+					const auto* elem = ctx.elem;
+					const auto nonuniform = (elem->flags & T7_FX_ELEM_NONUNIFORM_SCALE) != 0;
 
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_SIZE_GRAPH;
-					auto& module_data = module.moduleData.sizeGraph;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.firstCurve = false;
-
-					const auto sample_count = elem->visStateIntervalCount + 1;
-					const auto sample_size = 1.0f / std::max(1, sample_count - 1);
-
-					float width_scale = 0.0f;
-					float height_scale = 0.0f;
-					float scale_scale = 0.0f;
-
+					// the template's attenuation distance for lights (light_template)
+					auto light_scale = map::bo3_light_scale;
+					if (is_light_type(elem->elemType))
 					{
-						min_max_curve_sample width{};
-						min_max_curve_sample height{};
-						min_max_curve_sample scale{};
-
-						for (auto s = 0; s < sample_count; s++)
+						const auto* visual = elem->visualCount == 1 ? elem->visuals.instance.anonymous : nullptr;
+						const auto* config = visual ? reinterpret_cast<const GfxConfig_Light*>(static_cast<const char*>(visual) + 8) : nullptr;
+						if (config && is_readable(config, sizeof(GfxConfig_Light)))
 						{
-							get_min_max_for_sample(width, vis[s].base.size[0], vis[s].amplitude.size[0], s);
-							get_min_max_for_sample(height, vis[s].base.size[1], vis[s].amplitude.size[1], s);
-							get_min_max_for_sample(scale, vis[s].base.scale, vis[s].amplitude.scale, s);
+							light_scale = config->dAttenuation * config->dAttenuation / omni_light_unit * map::bo3_light_scale;
 						}
-
-						width_scale = width.get_abs_max() * 2.0f;
-						height_scale = height.get_abs_max() * 2.0f;
-						scale_scale = scale.get_abs_max() * 2.0f;
 					}
 
-					if (!width_scale && !height_scale && !scale_scale)
+					enum class channel { none, size0, size1, scale, radius, intensity };
+					channel axes[3] = { channel::none, channel::none, channel::none };
+					switch (elem->elemType)
 					{
+					case T7_ELEM_TYPE_SPRITE_BILLBOARD:
+					case T7_ELEM_TYPE_SPRITE_ORIENTED:
+					case T7_ELEM_TYPE_SPRITE_ROTATED:
+					case T7_ELEM_TYPE_TAIL:
+					case T7_ELEM_TYPE_LINE:
+					case T7_ELEM_TYPE_TRAIL:
+					case T7_ELEM_TYPE_CLOUD:
+						axes[0] = channel::size0;
+						axes[1] = nonuniform ? channel::size1 : channel::size0;
+						break;
+					case T7_ELEM_TYPE_DECAL:
+						axes[0] = channel::size0;
+						axes[1] = channel::size0;
+						break;
+					case T7_ELEM_TYPE_OMNI_LIGHT:
+					case T7_ELEM_TYPE_SPOT_LIGHT:
+						axes[0] = channel::radius;
+						axes[1] = channel::intensity;
+						break;
+					case T7_ELEM_TYPE_MODEL:
+						axes[0] = axes[1] = axes[2] = channel::scale;
+						break;
+					default:
 						return;
 					}
-
-					int width_index0 = -1;
-					int height_index0 = -1;
-					int scale_index0 = -1;
-
+					const auto value = [&](const channel which, const t7_vis_state& s)
 					{
-						int index = 0;
-
-						if (width_scale) width_index0 = index++;
-						if (height_scale) height_index0 = index++;
-						if (scale_scale) scale_index0 = index++;
-
-						if (!width_scale) width_index0 = index++;
-						if (!height_scale) height_index0 = index++;
-						if (!scale_scale) scale_index0 = index++;
-					}
-
-					const auto width_index1 = width_index0 + 3;
-					const auto height_index1 = height_index0 + 3;
-					const auto scale_index1 = scale_index0 + 3;
-
-					const auto alloc_pair = [&](int index0, int index1, float scale)
-					{
-						const auto count = scale ? sample_count : 2;
-
-						module_data.m_curves[index0].numControlPoints = count;
-						module_data.m_curves[index0].controlPoints =
-							ctx.allocator->allocate_array<i7::ParticleCurveControlPointDef>(count);
-
-						module_data.m_curves[index1].numControlPoints = count;
-						module_data.m_curves[index1].controlPoints =
-							ctx.allocator->allocate_array<i7::ParticleCurveControlPointDef>(count);
-
-						if (scale)
+						switch (which)
 						{
-							module_data.m_curves[index0].scale = scale;
-							module_data.m_curves[index1].scale = scale;
-						}
-						else
-						{
-							set_default_size_values(module_data.m_curves[index0]);
-							set_default_size_values(module_data.m_curves[index1]);
+						case channel::size0: return s.size[0];
+						case channel::size1: return s.size[1];
+						case channel::scale: return s.scale;
+						case channel::radius: return s.radius;
+						case channel::intensity: return s.intensity * light_scale;
+						default: return 0.0f;
 						}
 					};
 
-					alloc_pair(width_index0, width_index1, width_scale);
-					alloc_pair(height_index0, height_index1, height_scale);
-					alloc_pair(scale_index0, scale_index1, scale_scale);
-
-					for (auto i = 0; i < sample_count; i++)
+					auto module = new_module(i7::PARTICLE_MODULE_SIZE_GRAPH);
+					auto& data = module.moduleData.sizeGraph;
+					data.firstCurve = false;
+					for (auto axis = 0; axis < 3; axis++)
 					{
-						if (width_scale)
+						std::vector<float> min, max;
+						for (auto i = 0; i < vis.count && axes[axis] != channel::none; i++)
 						{
-							module_data.m_curves[width_index0].controlPoints[i].time = sample_size * i;
-							module_data.m_curves[width_index0].controlPoints[i].value = vis[i].base.size[0] / width_scale;
-
-							module_data.m_curves[width_index1].controlPoints[i].time = sample_size * i;
-							module_data.m_curves[width_index1].controlPoints[i].value = vis[i].amplitude.size[0] / width_scale +
-								module_data.m_curves[width_index0].controlPoints[i].value;
+							const auto base = value(axes[axis], vis.samples[i].base);
+							min.push_back(base);
+							max.push_back(base + value(axes[axis], vis.samples[i].amplitude));
 						}
-
-						if (height_scale)
+						if (min.empty())
 						{
-							module_data.m_curves[height_index0].controlPoints[i].time = sample_size * i;
-							module_data.m_curves[height_index0].controlPoints[i].value = vis[i].base.size[1] / height_scale;
-
-							module_data.m_curves[height_index1].controlPoints[i].time = sample_size * i;
-							module_data.m_curves[height_index1].controlPoints[i].value = vis[i].amplitude.size[1] / height_scale +
-								module_data.m_curves[height_index0].controlPoints[i].value;
-						}
-
-						if (scale_scale)
-						{
-							module_data.m_curves[scale_index0].controlPoints[i].time = sample_size * i;
-							module_data.m_curves[scale_index0].controlPoints[i].value = vis[i].base.scale / scale_scale;
-
-							module_data.m_curves[scale_index1].controlPoints[i].time = sample_size * i;
-							module_data.m_curves[scale_index1].controlPoints[i].value = vis[i].amplitude.scale / scale_scale +
-								module_data.m_curves[scale_index0].controlPoints[i].value;
-						}
-					}
-
-					calculate_inv_time_delta(module_data.m_curves, 6);
-
-					const auto effect_size_scale = converted_effect_size_scale(ctx);
-					if (effect_size_scale != 1.0f)
-					{
-						for (auto& curve : module_data.m_curves)
-						{
-							curve.scale *= effect_size_scale;
-						}
-					}
-
-					if (width_scale)
-					{
-						fixup_randomization_flags(module_data.m_curves[width_index0], module_data.m_curves[width_index1], &module_data.m_flags);
-					}
-					if (height_scale)
-					{
-						fixup_randomization_flags(module_data.m_curves[height_index0], module_data.m_curves[height_index1], &module_data.m_flags);
-					}
-					if (scale_scale)
-					{
-						fixup_randomization_flags(module_data.m_curves[scale_index0], module_data.m_curves[scale_index1], &module_data.m_flags);
-					}
-
-					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_SIZE_CURVE;
-
-					modules.push_back(module);
-				}
-
-				void generate_rotation_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					const auto* vis = get_vis_samples(elem);
-					if (!vis)
-					{
-						return;
-					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_ROTATION_GRAPH;
-					auto& module_data = module.moduleData.rotationGraph;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_useRotationRate = true;
-
-					const auto sample_count = elem->visStateIntervalCount + 1;
-
-					min_max_curve_sample rotation{};
-					for (auto s = 0; s < sample_count; s++)
-					{
-						get_min_max_for_sample(rotation, vis[s].base.rotationDelta, vis[s].amplitude.rotationDelta, s);
-					}
-
-					const auto rotation_scale = rotation.get_abs_max() * (sample_count - 1) * 1000.0f * 2.0f;
-					if (!rotation_scale)
-					{
-						return;
-					}
-
-					const auto sample_size = 1.0f / std::max(1, sample_count - 1);
-					const auto sample_scalar = (sample_count - 1) * 1000.0f;
-
-					for (auto i = 0; i < 2; i++)
-					{
-						module_data.m_curves[i].numControlPoints = sample_count;
-						module_data.m_curves[i].controlPoints =
-							ctx.allocator->allocate_array<i7::ParticleCurveControlPointDef>(sample_count);
-						module_data.m_curves[i].scale = rotation_scale;
-					}
-
-					for (auto i = 0; i < sample_count; i++)
-					{
-						const auto base_vel = vis[i].base.rotationDelta * sample_scalar / rotation_scale;
-						const auto ampl_vel = vis[i].amplitude.rotationDelta * sample_scalar / rotation_scale;
-
-						module_data.m_curves[0].controlPoints[i].value = base_vel;
-						module_data.m_curves[0].controlPoints[i].time = sample_size * i;
-
-						module_data.m_curves[1].controlPoints[i].value = base_vel + ampl_vel;
-						module_data.m_curves[1].controlPoints[i].time = sample_size * i;
-					}
-
-					calculate_inv_time_delta(module_data.m_curves, 2);
-
-					fixup_randomization_flags(module_data.m_curves[0], module_data.m_curves[1], &module_data.m_flags);
-
-					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_ROTATION_1D_CURVE;
-
-					modules.push_back(module);
-				}
-
-				void generate_velocity_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					const auto* vel = get_vel_samples(elem);
-					if (!vel)
-					{
-						return;
-					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_VELOCITY_GRAPH;
-					auto& module_data = module.moduleData.velocityGraph;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					const auto sample_count = elem->velIntervalCount + 1;
-					const auto sample_size = 1.0f / std::max(1, sample_count - 1);
-					const auto sample_scalar = 1.0f / (std::max(1, sample_count - 1) * 1000.0f);
-
-					float local_scales[3]{};
-					float world_scales[3]{};
-					calculate_velocity_scales(local_scales, world_scales, vel, sample_count, sample_scalar);
-
-					if (!local_scales[0] && !local_scales[1] && !local_scales[2] &&
-						!world_scales[0] && !world_scales[1] && !world_scales[2])
-					{
-						return;
-					}
-
-					const bool local = (elem->flags & T7_FX_ELEM_HAS_VELOCITY_GRAPH_LOCAL) != 0;
-					const bool world = (elem->flags & T7_FX_ELEM_HAS_VELOCITY_GRAPH_WORLD) != 0;
-
-					if (local && world)
-					{
-						ZONETOOL_WARNING("vfx \"%s\": element type %u has simultaneous local/world velocity; leaving its velocity graph out",
-							ctx.fx_name, elem->elemType);
-						return;
-					}
-
-					if (!local && !world)
-					{
-						return;
-					}
-
-					module_data.m_flags |= world ? i7::PARTICLE_MODULE_FLAG_USE_WORLD_SPACE : 0;
-
-					const auto space = local ? vel_space::local : vel_space::world;
-					const auto* scales = local ? local_scales : world_scales;
-
-					const auto alloc_curve = [&](int index, float scale)
-					{
-						const auto count = scale ? sample_count : 2;
-						module_data.m_curves[index].numControlPoints = count;
-						module_data.m_curves[index].controlPoints =
-							ctx.allocator->allocate_array<i7::ParticleCurveControlPointDef>(count);
-
-						if (scale)
-						{
-							module_data.m_curves[index].scale = scale;
-						}
-						else
-						{
-							set_default_velocity_values(module_data.m_curves[index]);
-						}
-					};
-
-					for (auto dir = 0; dir < 3; dir++)
-					{
-						alloc_curve(dir, scales[dir]);
-						alloc_curve(dir + 3, scales[dir]);
-					}
-
-					for (auto i = 0; i < sample_count; i++)
-					{
-						for (auto dir = 0; dir < 3; dir++)
-						{
-							if (!scales[dir])
+							// an unused axis: stock writes scale 0 over value 1
+							for (auto* curve : { &data.m_curves[axis], &data.m_curves[axis + 3] })
 							{
-								continue;
+								*curve = make_curve(ctx, { 1.0f });
+								curve->scale = 0.0f;
 							}
-
-							const auto base_vel = get_velocity_value(space, dir, sample_value_type::base, vel, i) /
-								sample_scalar / scales[dir];
-							const auto ampl_vel = get_velocity_value(space, dir, sample_value_type::amplitude, vel, i) /
-								sample_scalar / scales[dir];
-
-							module_data.m_curves[dir].controlPoints[i].value = base_vel;
-							module_data.m_curves[dir].controlPoints[i].time = sample_size * i;
-
-							module_data.m_curves[dir + 3].controlPoints[i].value = base_vel + ampl_vel;
-							module_data.m_curves[dir + 3].controlPoints[i].time = sample_size * i;
+							continue;
 						}
+						make_curve_pair(ctx, min, max, data.m_curves[axis], data.m_curves[axis + 3], data.m_flags);
 					}
-
-					calculate_inv_time_delta(module_data.m_curves, 6);
-
-					fixup_randomization_flags(module_data.m_curves[0], module_data.m_curves[3], &module_data.m_flags);
-					fixup_randomization_flags(module_data.m_curves[1], module_data.m_curves[4], &module_data.m_flags);
-					fixup_randomization_flags(module_data.m_curves[2], module_data.m_curves[5], &module_data.m_flags);
-
-					ctx.state_flags |= local ? i7::PARTICLE_STATE_DEF_FLAG_HAS_VELOCITY_CURVE_LOCAL1 : 0;
-					ctx.state_flags |= world ? i7::PARTICLE_STATE_DEF_FLAG_HAS_VELOCITY_CURVE_WORLD1 : 0;
-
 					modules.push_back(module);
 				}
 
-				void generate_gravity_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				// BO3's rotation delta is per interval and millisecond: N x delta x 1000 radians a second
+				void generate_rotation_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
 				{
+					const auto vis = get_vis_samples(ctx.elem);
+					if (!vis.samples)
+					{
+						return;
+					}
+					const auto rate = static_cast<float>(vis.intervals()) * 1000.0f;
+					std::vector<float> min, max;
+					auto any = false;
+					for (auto i = 0; i < vis.count; i++)
+					{
+						const auto base = vis.samples[i].base.rotation_delta;
+						const auto ampl = vis.samples[i].amplitude.rotation_delta;
+						min.push_back(base * rate);
+						max.push_back((base + ampl) * rate);
+						any |= base != 0.0f || ampl != 0.0f;
+					}
+					if (!any)
+					{
+						return;
+					}
+					auto module = new_module(i7::PARTICLE_MODULE_ROTATION_GRAPH);
+					auto& data = module.moduleData.rotationGraph;
+					data.m_useRotationRate = true;
+					make_curve_pair(ctx, min, max, data.m_curves[0], data.m_curves[1], data.m_flags);
+					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_ROTATION_1D_CURVE;
+					modules.push_back(module);
+				}
+
+				// BO3 applies local and world velocity together: one IW7 graph for each space that moves
+				void generate_velocity_modules(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					const auto vel = get_vel_samples(ctx.elem);
+					if (!vel.samples)
+					{
+						return;
+					}
+					const auto rate = static_cast<float>(vel.intervals()) * 1000.0f;
+					for (const auto world : { false, true })
+					{
+						const auto flag = world ? T7_FX_ELEM_HAS_VELOCITY_GRAPH_WORLD : T7_FX_ELEM_HAS_VELOCITY_GRAPH_LOCAL;
+						if ((ctx.elem->flags & flag) == 0)
+						{
+							continue;
+						}
+						std::vector<float> min[3], max[3];
+						auto moves = false;
+						for (auto i = 0; i < vel.count; i++)
+						{
+							const auto& frame = world ? vel.samples[i].world : vel.samples[i].local;
+							for (auto axis = 0; axis < 3; axis++)
+							{
+								min[axis].push_back(frame.velocity_base[axis] * rate);
+								max[axis].push_back((frame.velocity_base[axis] + frame.velocity_amplitude[axis]) * rate);
+								moves |= frame.velocity_base[axis] != 0.0f || frame.velocity_amplitude[axis] != 0.0f;
+							}
+						}
+						if (!moves)
+						{
+							continue;
+						}
+						auto module = new_module(i7::PARTICLE_MODULE_VELOCITY_GRAPH);
+						auto& data = module.moduleData.velocityGraph;
+						data.m_flags |= world ? i7::PARTICLE_MODULE_FLAG_USE_WORLD_SPACE : 0;
+						for (auto axis = 0; axis < 3; axis++)
+						{
+							make_curve_pair(ctx, min[axis], max[axis], data.m_curves[axis], data.m_curves[axis + 3], data.m_flags);
+						}
+						ctx.state_flags |= world ? i7::PARTICLE_STATE_DEF_FLAG_HAS_VELOCITY_CURVE_WORLD1 : i7::PARTICLE_STATE_DEF_FLAG_HAS_VELOCITY_CURVE_LOCAL1;
+						modules.push_back(module);
+					}
+				}
+
+				void generate_gravity_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					const auto* elem = ctx.elem;
 					if (elem->gravity.base == 0.0f && elem->gravity.amplitude == 0.0f)
 					{
 						return;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_GRAVITY;
-					auto& module_data = module.moduleData.gravity;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_gravityPercentage.min = elem->gravity.base;
-					module_data.m_gravityPercentage.max = elem->gravity.base + elem->gravity.amplitude;
-
+					auto module = new_module(i7::PARTICLE_MODULE_GRAVITY);
+					auto& data = module.moduleData.gravity;
+					data.m_gravityPercentage.min = elem->gravity.base;
+					data.m_gravityPercentage.max = elem->gravity.base + elem->gravity.amplitude;
 					modules.push_back(module);
 				}
 
-				void generate_init_spawn_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				// IW7 draws a tail only once a velocity component exceeds 0.001 units a second (0x140D095B0); BO3 draws a line
+				// along whatever velocity it has (0x140201950). Slow velocity graphs are scaled up to 0.002, and a line only
+				// gravity moves gets a constant world velocity of 0.002 units a second along gravity.
+				void generate_tail_orientation_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
 				{
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_SPAWN;
-					auto& module_data = module.moduleData.initSpawn;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_curves[0].scale = 1.0f;
-					module_data.m_curves[0].numControlPoints = 3;
-					module_data.m_curves[0].controlPoints =
-						ctx.allocator->allocate_array<i7::ParticleCurveControlPointDef>(3);
-
-					module_data.m_curves[0].controlPoints[0].value = 1.0f;
-					module_data.m_curves[0].controlPoints[1].value = 1.0f;
-					module_data.m_curves[0].controlPoints[2].value = 0.0f;
-
-					module_data.m_curves[0].controlPoints[0].time = 0.0f;
-					module_data.m_curves[0].controlPoints[1].time = 0.75f;
-					module_data.m_curves[0].controlPoints[2].time = 1.0f;
-
-					calculate_inv_time_delta(module_data.m_curves, 1);
-
-					modules.push_back(module);
-				}
-
-				void generate_init_attributes_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_ATTRIBUTES;
-					auto& module_data = module.moduleData.initAttributes;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_useNonUniformInterpolationForColor = false;
-					module_data.m_useNonUniformInterpolationForSize = (elem->flags & T7_FX_ELEM_NONUNIFORM_SCALE) != 0;
-
-					const std::string effect_name = ctx.fx_name ? ctx.fx_name : "";
-					const bool idgun_world_effect = effect_name.find("fx_idgun_") != std::string::npos &&
-						effect_name.find("fx_idgun_muz_") == std::string::npos &&
-						effect_name.find("fx_idgun_projectile") == std::string::npos;
-					const auto base_size = idgun_world_effect ? 1.0f : 10.0f;
-					for (auto i = 0; i < 3; i++)
-					{
-						module_data.m_sizeMin.v[i] = base_size;
-						module_data.m_sizeMax.v[i] = base_size;
-					}
-					module_data.m_sizeMin.v[3] = 0.0f;
-					module_data.m_sizeMax.v[3] = 0.0f;
-
-					for (auto i = 0; i < 4; i++)
-					{
-						module_data.m_colorMin.v[i] = 1.0f;
-						module_data.m_colorMax.v[i] = 1.0f;
-						module_data.m_velocityMin.v[i] = 0.0f;
-						module_data.m_velocityMax.v[i] = 0.0f;
-					}
-
-					modules.push_back(module);
-				}
-
-				void generate_init_relative_velocity_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_RELATIVE_VELOCITY;
-					auto& module_data = module.moduleData.initRelativeVelocity;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_useBoltInfo = false;
-
-					switch (elem->flags & T7_FX_ELEM_RUN_MASK)
-					{
-					case T7_FX_ELEM_RUN_RELATIVE_TO_WORLD:
-					case T7_FX_ELEM_RUN_RELATIVE_TO_CAMERA:
-						module_data.m_velocityType = i7::PARTICLE_RELATIVE_VELOCITY_TYPE_WORLD;
-						break;
-					case T7_FX_ELEM_RUN_RELATIVE_TO_SPAWN:
-					case T7_FX_ELEM_RUN_RELATIVE_TO_EFFECT:
-						module_data.m_velocityType = i7::PARTICLE_RELATIVE_VELOCITY_TYPE_LOCAL;
-						break;
-					case T7_FX_ELEM_RUN_RELATIVE_TO_OFFSET:
-						module_data.m_velocityType = i7::PARTICLE_RELATIVE_VELOCITY_TYPE_RELATIVE_TO_EFFECT_ORIGIN;
-						break;
-					}
-
-					if (elem->elemType == T7_ELEM_TYPE_TRAIL)
-					{
-						module_data.m_velocityType = i7::PARTICLE_RELATIVE_VELOCITY_TYPE_LOCAL_WITH_BOLT_INFO;
-						module_data.m_useBoltInfo = true;
-					}
-
-					modules.push_back(module);
-				}
-
-				void generate_init_rotation_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					if (elem->initialRotation.base == 0.0f && elem->initialRotation.amplitude == 0.0f)
+					const auto* elem = ctx.elem;
+					if (elem->elemType != T7_ELEM_TYPE_TAIL && elem->elemType != T7_ELEM_TYPE_LINE)
 					{
 						return;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_ROTATION;
-					auto& module_data = module.moduleData.initRotation;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_rotationAngle.min = elem->initialRotation.base;
-					module_data.m_rotationAngle.max = elem->initialRotation.base + elem->initialRotation.amplitude;
-
-					module_data.m_rotationRate.min = 0.0f;
-					module_data.m_rotationRate.max = 0.0f;
-
-					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_ROTATION_1D_INIT;
-
-					modules.push_back(module);
-				}
-
-				void generate_init_rotation3d_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					bool has_rotation = false;
-					for (auto i = 0; i < 3; i++)
+					// graphs orient it; ones that never reach the threshold are scaled up to it, keeping BO3's direction
+					auto peak = 0.0f;
+					auto graphs = false;
+					for (const auto& m : modules)
 					{
-						has_rotation |= elem->spawnAngles[i].base != 0.0f ||
-							elem->spawnAngles[i].amplitude != 0.0f ||
-							elem->angularVelocity[i].base != 0.0f ||
-							elem->angularVelocity[i].amplitude != 0.0f;
-					}
-
-					if (!has_rotation)
-					{
-						return;
-					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_ROTATION_3D;
-					auto& module_data = module.moduleData.initRotation3D;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					for (auto i = 0; i < 3; i++)
-					{
-						module_data.m_rotationRateMin.v[i] = elem->angularVelocity[i].base;
-						module_data.m_rotationRateMax.v[i] = elem->angularVelocity[i].base + elem->angularVelocity[i].amplitude;
-
-						module_data.m_rotationAngleMin.v[i] = elem->spawnAngles[i].base;
-						module_data.m_rotationAngleMax.v[i] = elem->spawnAngles[i].base + elem->spawnAngles[i].amplitude;
-					}
-					module_data.m_rotationRateMin.v[3] = 0.0f;
-					module_data.m_rotationRateMax.v[3] = 0.0f;
-					module_data.m_rotationAngleMin.v[3] = 0.0f;
-					module_data.m_rotationAngleMax.v[3] = 0.0f;
-
-					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_ROTATION_3D_INIT;
-
-					modules.push_back(module);
-				}
-
-				void generate_init_atlas_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					if (!is_sprite_type(elem->elemType))
-					{
-						return;
-					}
-
-					if (elem->atlas.fps == 0 && elem->atlas.indexRange <= 1)
-					{
-						return;
-					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_ATLAS;
-					auto& module_data = module.moduleData.initAtlas;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_playRate = elem->atlas.fps;
-					module_data.m_startFrame = 0;
-					module_data.m_loopCount = elem->atlas.loopCount;
-
-					modules.push_back(module);
-				}
-
-				void generate_init_material_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					if (!is_sprite_type(elem->elemType))
-					{
-						ctx.system_flags |= i7::PARTICLE_SYSTEM_DEF_FLAG_HAS_NON_SPRITES;
-						return;
-					}
-
-					if (elem->elemType == T7_ELEM_TYPE_TRAIL)
-					{
-						ZONETOOL_WARNING("vfx \"%s\": geo trail material may need a manual eq->ev fixup", ctx.fx_name);
-					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_MATERIAL;
-					auto& module_data = module.moduleData.initMaterial;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					const auto visual_count = elem->visualCount;
-					if (!visual_count)
-					{
-						return;
-					}
-
-					if (visual_count > 1)
-					{
-						if (!is_readable(elem->visuals.array, sizeof(FxElemVisuals) * visual_count))
+						if (m.moduleType != i7::PARTICLE_MODULE_VELOCITY_GRAPH)
 						{
-							return;
+							continue;
 						}
-
-						std::vector<i7::Material*> materials{};
-						materials.reserve(visual_count);
-						for (auto i = 0; i < visual_count; i++)
+						graphs = true;
+						for (const auto& c : m.moduleData.velocityGraph.m_curves)
 						{
-							if (auto* material = particle_material_alias(ctx,
-								elem->visuals.array[i].material, *ctx.allocator))
+							for (auto k = 0; k < c.numControlPoints; k++)
 							{
-								materials.push_back(material);
+								peak = std::max(peak, std::fabs(c.controlPoints[k].value * c.scale));
 							}
 						}
-
-						if (materials.empty())
-						{
-							return;
-						}
-
-						module_data.m_linkedAssetList.numAssets = static_cast<unsigned int>(materials.size());
-						module_data.m_linkedAssetList.assetList =
-							ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(materials.size());
-
-						for (auto i = 0u; i < materials.size(); i++)
-						{
-							module_data.m_linkedAssetList.assetList[i].material = materials[i];
-						}
 					}
-					else
+					if (graphs)
 					{
-						auto* material = particle_material_alias(ctx,
-							elem->visuals.instance.material, *ctx.allocator);
-						if (!material)
+						if (peak > 0.0f && peak < 0.002f)
 						{
-							return;
+							for (auto& m : modules)
+							{
+								if (m.moduleType == i7::PARTICLE_MODULE_VELOCITY_GRAPH)
+								{
+									for (auto& c : m.moduleData.velocityGraph.m_curves)
+									{
+										c.scale *= 0.002f / peak;
+									}
+								}
+							}
 						}
-
-						module_data.m_linkedAssetList.numAssets = 1;
-						module_data.m_linkedAssetList.assetList =
-							ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(1);
-						module_data.m_linkedAssetList.assetList[0].material = material;
+						return;
 					}
-
-					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_IS_SPRITE;
-					ctx.system_flags |= i7::PARTICLE_SYSTEM_DEF_FLAG_HAS_SPRITES;
-
-					modules.push_back(module);
-				}
-
-				void generate_init_oriented_sprite_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					if (elem->elemType != T7_ELEM_TYPE_SPRITE_ORIENTED &&
-						elem->elemType != T7_ELEM_TYPE_SPRITE_ROTATED)
+					// the direction of the range's middle
+					const auto g_mid = elem->gravity.base + elem->gravity.amplitude * 0.5f;
+					if (g_mid == 0.0f)
 					{
 						return;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_ORIENTED_SPRITE;
-					auto& module_data = module.moduleData.initOrientedSprite;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					if (elem->elemType == T7_ELEM_TYPE_SPRITE_ROTATED)
+					constexpr auto speed = 0.002f;
+					const auto up = g_mid < 0.0f ? speed : -speed; // BO3 gravity pulls along -z
+					auto module = new_module(i7::PARTICLE_MODULE_VELOCITY_GRAPH);
+					auto& data = module.moduleData.velocityGraph;
+					data.m_flags |= i7::PARTICLE_MODULE_FLAG_USE_WORLD_SPACE;
+					for (auto axis = 0; axis < 3; axis++)
 					{
-						module_data.m_orientationQuat.v[3] = 1.0f;
+						const std::vector<float> value = { axis == 2 ? up : 0.0f };
+						make_curve_pair(ctx, value, value, data.m_curves[axis], data.m_curves[axis + 3], data.m_flags);
 					}
-					else
-					{
-						module_data.m_orientationQuat.v[0] = 0.5f;
-						module_data.m_orientationQuat.v[1] = 0.5f;
-						module_data.m_orientationQuat.v[2] = 0.5f;
-						module_data.m_orientationQuat.v[3] = 0.5f;
-
-						if ((elem->flags & T7_FX_ELEM_RUN_MASK) == T7_FX_ELEM_RUN_RELATIVE_TO_SPAWN)
-						{
-							module_data.m_orientationQuat.v[1] *= -1.0f;
-							module_data.m_orientationQuat.v[2] *= -1.0f;
-						}
-					}
-
+					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_VELOCITY_CURVE_WORLD1;
 					modules.push_back(module);
 				}
 
-				void generate_init_omni_light_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				// ---- init modules --------------------------------------------------------------------------
+
+				void generate_init_spawn_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
 				{
-					if (elem->elemType != T7_ELEM_TYPE_OMNI_LIGHT)
+					// stock's spawn curve (1, 1, 0 at 0, 0.75, 1)
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_SPAWN);
+					auto& data = module.moduleData.initSpawn;
+					data.m_curves[0] = make_curve(ctx, { 1.0f, 1.0f, 0.0f });
+					data.m_curves[0].controlPoints[1].time = 0.75f;
+					data.m_curves[0].controlPoints[1].invTimeDelta = 1.0f / 0.75f;
+					data.m_curves[0].controlPoints[2].invTimeDelta = 1.0f / 0.25f;
+					modules.push_back(module);
+				}
+
+				void generate_init_attributes_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_ATTRIBUTES);
+					auto& data = module.moduleData.initAttributes;
+					for (auto i = 0; i < 3; i++)
+					{
+						data.m_sizeMin.v[i] = 10.0f;
+						data.m_sizeMax.v[i] = 10.0f;
+					}
+					for (auto i = 0; i < 4; i++)
+					{
+						data.m_colorMin.v[i] = 1.0f;
+						data.m_colorMax.v[i] = 1.0f;
+					}
+					modules.push_back(module);
+				}
+
+				void generate_init_relative_velocity_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_RELATIVE_VELOCITY);
+					auto& data = module.moduleData.initRelativeVelocity;
+					switch (ctx.elem->flags & T7_FX_ELEM_RUN_MASK)
+					{
+					case T7_FX_ELEM_RUN_RELATIVE_TO_SPAWN:
+					case T7_FX_ELEM_RUN_RELATIVE_TO_EFFECT:
+						data.m_velocityType = i7::PARTICLE_RELATIVE_VELOCITY_TYPE_LOCAL;
+						break;
+					case T7_FX_ELEM_RUN_RELATIVE_TO_OFFSET:
+						data.m_velocityType = i7::PARTICLE_RELATIVE_VELOCITY_TYPE_RELATIVE_TO_EFFECT_ORIGIN;
+						break;
+					default:
+						data.m_velocityType = i7::PARTICLE_RELATIVE_VELOCITY_TYPE_WORLD;
+						break;
+					}
+					// a trail, and both parts of an aimed spot light (the light follows its runner particle, as stock's)
+					if (ctx.elem->elemType == T7_ELEM_TYPE_TRAIL || ctx.element_part != part::whole)
+					{
+						data.m_velocityType = i7::PARTICLE_RELATIVE_VELOCITY_TYPE_LOCAL_WITH_BOLT_INFO;
+						data.m_useBoltInfo = true;
+					}
+					modules.push_back(module);
+				}
+
+				void generate_init_rotation_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					const auto& r = ctx.elem->initialRotation;
+					if (r.base == 0.0f && r.amplitude == 0.0f)
 					{
 						return;
 					}
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_ROTATION);
+					auto& data = module.moduleData.initRotation;
+					data.m_rotationAngle.min = r.base;
+					data.m_rotationAngle.max = r.base + r.amplitude;
+					// stock clouds never carry the flag; a BO3 cloud drawn as a billboard (its material is not a cloud one) does
+					if (!ctx.has_material || ctx.material.shade != effect_material::shading::cloud)
+					{
+						ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_ROTATION_1D_INIT;
+					}
+					modules.push_back(module);
+				}
 
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_LIGHT_OMNI;
-					auto& module_data = module.moduleData.initLightOmni;
-					module_data.type = module.moduleType;
-					module_data.m_flags = i7::PARTICLE_MODULE_FLAG_HAS_LIGHT_DEFS;
+				// spawn angles (radians) and angular velocity (radians a millisecond)
+				void generate_init_rotation3d_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					const auto* elem = ctx.elem;
+					auto any = false;
+					for (auto i = 0; i < 3; i++)
+					{
+						any |= elem->spawnAngles[i].base != 0.0f || elem->spawnAngles[i].amplitude != 0.0f ||
+							elem->angularVelocity[i].base != 0.0f || elem->angularVelocity[i].amplitude != 0.0f;
+					}
+					if (!any)
+					{
+						return;
+					}
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_ROTATION_3D);
+					auto& data = module.moduleData.initRotation3D;
+					for (auto i = 0; i < 3; i++)
+					{
+						data.m_rotationAngleMin.v[i] = elem->spawnAngles[i].base;
+						data.m_rotationAngleMax.v[i] = elem->spawnAngles[i].base + elem->spawnAngles[i].amplitude;
+						data.m_rotationRateMin.v[i] = elem->angularVelocity[i].base * 1000.0f;
+						data.m_rotationRateMax.v[i] = (elem->angularVelocity[i].base + elem->angularVelocity[i].amplitude) * 1000.0f;
+					}
+					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_ROTATION_3D_INIT;
+					modules.push_back(module);
+				}
 
-					module_data.m_linkedAssetList.numAssets = 1;
-					module_data.m_linkedAssetList.assetList =
-						ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(1);
-					module_data.m_linkedAssetList.assetList[0].lightDef =
-						alias_asset<i7::GfxLightDef>(ctx.allocator->duplicate_string("light_fx_default"),
-							*ctx.allocator);
-					module_data.m_tonemappingScaleFactor = 1.0f;
-					module_data.m_intensityIR = 0.0f;
-					module_data.m_disableVolumetric = false;
-					module_data.m_exponent = 0;
+				// BO3's atlas as IW7's INIT_ATLAS (sub_D0F950 reads the two bytes after loopCount); frame blending is the
+				// material's
+				void generate_init_atlas_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					if (!ctx.has_material || ctx.material.shade == effect_material::shading::cloud)
+					{
+						return;
+					}
+					const auto& atlas = ctx.elem->atlas;
+					if ((atlas.behavior & atlas_enabled) == 0)
+					{
+						return;
+					}
+					const auto frames = 1 << (atlas.colIndexBits + atlas.rowIndexBits);
+					const auto start = atlas.behavior & atlas_start_mask;
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_ATLAS);
+					auto& data = module.moduleData.initAtlas;
+					auto* extra = reinterpret_cast<std::uint8_t*>(&data) + sizeof(i7::ParticleModuleInitAtlas);
+					if (ctx.material.atlas_slots)
+					{
+						// the material's atlas is the element's frame range in play order (effect_material.cpp): played from its
+						// first frame forwards, a loop as long as BO3's
+						data.m_playRate = static_cast<int>(std::lround(atlas.fps * static_cast<double>(ctx.material.atlas_slots) /
+							ctx.material.atlas_range));
+						data.m_startFrame = 0;
+						data.m_loopCount = (atlas.behavior & atlas_loop_only_n_times) ? atlas.loopCount : -1;
+						extra[0] = 0;
+						extra[1] = (atlas.behavior & atlas_play_over_life) ? 1 : 0;
+						modules.push_back(module);
+						return;
+					}
+					if (start == atlas_start_range)
+					{
+						ZONETOOL_WARNING("effect \"%s\" element %d: its atlas plays frames %d to %d only; IW7 plays on through the others",
+							ctx.effect->name, ctx.elem_index, atlas.index, atlas.index + atlas.indexRange - 1);
+					}
+					// BO3 reverses by mirroring the frame (count - 1 - frame), IW7 by a negative rate from the start frame
+					const auto reverse = (atlas.behavior & atlas_reverse) != 0;
+					data.m_playRate = reverse ? -static_cast<int>(atlas.fps) : atlas.fps;
+					data.m_startFrame = reverse ? frames - 1 - atlas.index : atlas.index;
+					data.m_loopCount = (atlas.behavior & atlas_loop_only_n_times) ? atlas.loopCount : -1;
+					// random, or the element's sequence (IW7 has no sequence start): a random frame
+					extra[0] = start == 1 || start == 2 ? 1 : 0;
+					extra[1] = (atlas.behavior & atlas_play_over_life) ? 1 : 0;
+					modules.push_back(module);
+				}
 
-					ctx.system_flags |= i7::PARTICLE_SYSTEM_DEF_FLAG_HAS_LIGHTS;
+				// the IW7 materials of a sprite element's visuals; false when none converts
+				bool generate_init_material_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					const auto* elem = ctx.elem;
+					std::vector<const Material*> materials;
+					if (elem->visualCount == 1)
+					{
+						materials.push_back(elem->visuals.instance.material);
+					}
+					else if (elem->visualCount > 1 && is_readable(elem->visuals.array, sizeof(FxElemVisuals) * elem->visualCount))
+					{
+						for (auto i = 0; i < elem->visualCount; i++)
+						{
+							materials.push_back(elem->visuals.array[i].material);
+						}
+					}
+
+					std::vector<std::string> names;
+					for (const auto* material : materials)
+					{
+						if (!is_readable(material, sizeof(Material)))
+						{
+							continue;
+						}
+						const auto converted = ctx.refs->material(material, elem);
+						if (converted.name.empty())
+						{
+							continue;
+						}
+						if (!ctx.has_material)
+						{
+							ctx.material = converted;
+							ctx.has_material = true;
+						}
+						else if (converted.shade != ctx.material.shade)
+						{
+							ZONETOOL_WARNING("effect \"%s\" element %d: its visuals shade differently (%s); IW7 draws them all as the first one",
+								ctx.effect->name, ctx.elem_index, converted.name.data());
+						}
+						names.push_back(converted.name);
+					}
+					if (names.empty())
+					{
+						return false;
+					}
+
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_MATERIAL);
+					auto& data = module.moduleData.initMaterial;
+					data.m_linkedAssetList.numAssets = static_cast<int>(names.size());
+					data.m_linkedAssetList.assetList = ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(names.size());
+					for (auto i = 0u; i < names.size(); i++)
+					{
+						data.m_linkedAssetList.assetList[i].material = alias_asset<i7::Material>(names[i], *ctx.allocator);
+					}
+					modules.push_back(module);
+
+					if (ctx.material.shade == effect_material::shading::cloud)
+					{
+						ctx.system_flags |= i7::PARTICLE_SYSTEM_DEF_FLAG_HAS_NON_SPRITES;
+					}
+					else
+					{
+						ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_IS_SPRITE;
+						ctx.system_flags |= i7::PARTICLE_SYSTEM_DEF_FLAG_HAS_SPRITES;
+					}
+					if (ctx.material.shade == effect_material::shading::lit || ctx.material.shade == effect_material::shading::emissive_colour ||
+						ctx.material.shade == effect_material::shading::emissive_mask)
+					{
+						ctx.state_flags |= state_lit;
+					}
+					return true;
+				}
+
+				// BO3's oriented sprites face along the effect's axis; rotated sprites turn by their random spawn angles on
+				// top (INIT_ROTATION_3D)
+				void generate_init_oriented_sprite_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					if (ctx.elem->elemType != T7_ELEM_TYPE_SPRITE_ORIENTED && ctx.elem->elemType != T7_ELEM_TYPE_SPRITE_ROTATED)
+					{
+						return;
+					}
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_ORIENTED_SPRITE);
+					auto& data = module.moduleData.initOrientedSprite;
+					data.m_orientationQuat.v[0] = 0.5f;
+					data.m_orientationQuat.v[1] = 0.5f;
+					data.m_orientationQuat.v[2] = 0.5f;
+					data.m_orientationQuat.v[3] = 0.5f;
+					if ((ctx.elem->flags & T7_FX_ELEM_RUN_MASK) == T7_FX_ELEM_RUN_RELATIVE_TO_SPAWN)
+					{
+						data.m_orientationQuat.v[1] *= -1.0f;
+						data.m_orientationQuat.v[2] *= -1.0f;
+					}
+					modules.push_back(module);
+				}
+
+				// BO3's tail sits behind its particle, its line ahead (see the header comment)
+				void generate_init_tail_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					if (ctx.elem->elemType != T7_ELEM_TYPE_TAIL && ctx.elem->elemType != T7_ELEM_TYPE_LINE)
+					{
+						return;
+					}
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_TAIL);
+					auto& data = module.moduleData.initTail;
+					data.m_tailLeading = ctx.elem->elemType == T7_ELEM_TYPE_TAIL;
+					modules.push_back(module);
+				}
+
+				void generate_init_cloud_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					if (!ctx.has_material || ctx.material.shade != effect_material::shading::cloud)
+					{
+						return;
+					}
+					const auto vis = get_vis_samples(ctx.elem);
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_CLOUD);
+					auto& data = module.moduleData.initCloud;
+					std::vector<float> min, max;
+					for (auto i = 0; i < vis.count; i++)
+					{
+						min.push_back(vis.samples[i].base.scale);
+						max.push_back(vis.samples[i].base.scale + vis.samples[i].amplitude.scale);
+					}
+					auto any = false;
+					for (const auto v : max)
+					{
+						any |= v != 0.0f;
+					}
+					if (!any)
+					{
+						min = max = { 1.0f };
+					}
+					make_curve_pair(ctx, min, max, data.curves[0], data.curves[1], data.m_flags);
+					modules.push_back(module);
+				}
+
+				void generate_init_light_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					const auto* elem = ctx.elem;
+					if (!is_light_type(elem->elemType))
+					{
+						return;
+					}
+					const auto* visual = elem->visualCount == 1 ? elem->visuals.instance.anonymous : nullptr;
+					const auto* config = visual ? reinterpret_cast<const GfxConfig_Light*>(static_cast<const char*>(visual) + 8) : nullptr;
+					if (config && !is_readable(config, sizeof(GfxConfig_Light)))
+					{
+						config = nullptr;
+					}
+					// the template's type decides (BO3 draws type 4 as omni, others with the particle's cone)
+					const auto spot = config && config->type != 4;
+
+					ctx.system_flags |= i7::PARTICLE_SYSTEM_DEF_FLAG_HAS_LIGHTS | i7::PARTICLE_SYSTEM_DEF_FLAG_HAS_NON_SPRITES;
 					ctx.emitter_flags |= i7::PARTICLE_EMITTER_DEF_FLAG_HAS_LIGHTS;
+
+					i7::ParticleLinkedAssetListDef list{};
+					list.numAssets = 1;
+					list.assetList = ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(1);
+					list.assetList[0].lightDef = alias_asset<i7::GfxLightDef>(light_def, *ctx.allocator);
+
+					if (!spot)
+					{
+						auto module = new_module(i7::PARTICLE_MODULE_INIT_LIGHT_OMNI);
+						auto& data = module.moduleData.initLightOmni;
+						data.m_flags |= i7::PARTICLE_MODULE_FLAG_HAS_LIGHT_DEFS;
+						data.m_linkedAssetList = list;
+						data.m_tonemappingScaleFactor = 0.0f;
+						modules.push_back(module);
+						return;
+					}
+
+					const auto vis = get_vis_samples(elem);
+					const auto cone = vis.samples ? vis.samples[0].base.cone : 90.0f;
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_LIGHT_SPOT);
+					auto& data = module.moduleData.initLightSpot;
+					data.m_flags |= i7::PARTICLE_MODULE_FLAG_HAS_LIGHT_DEFS;
+					data.m_linkedAssetList = list;
+					data.m_fovOuter = cone * 0.5f * 0.017453292f;
+					data.m_fovInner = data.m_fovOuter * std::clamp(config->near_edge, 0.0f, 1.0f);
+					data.m_bulbRadius = 1.0f;
+					data.m_bulbLength = 0.0f;
+					data.m_brightness = 1.0f;
+					data.m_toneMappingScaleFactor = 0.0f;
+					data.m_disableShadowMap = true;
+					data.m_disableDynamicShadows = true;
 					modules.push_back(module);
 				}
 
-				void generate_init_tail_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				void generate_init_model_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
 				{
-					const auto line_with_velocity = elem->elemType == T7_ELEM_TYPE_LINE &&
-						(elem->flags & (T7_FX_ELEM_HAS_VELOCITY_GRAPH_LOCAL |
-							T7_FX_ELEM_HAS_VELOCITY_GRAPH_WORLD));
-					if (elem->elemType != T7_ELEM_TYPE_TAIL && !line_with_velocity)
+					const auto* elem = ctx.elem;
+					if (elem->elemType != T7_ELEM_TYPE_MODEL || !elem->visualCount)
 					{
 						return;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_TAIL;
-					auto& module_data = module.moduleData.initTail;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_averagePastVelocities = 0;
-					module_data.m_maxParentSpeed = 0;
-					module_data.m_tailLeading = elem->elemType == T7_ELEM_TYPE_LINE;
-					module_data.m_scaleWithVelocity = false;
-					module_data.m_rotateAroundPivot = false;
-
-					modules.push_back(module);
-				}
-
-				void generate_init_geo_trail_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					if (elem->elemType != T7_ELEM_TYPE_TRAIL)
+					std::vector<std::string> names;
+					for (auto i = 0; i < elem->visualCount; i++)
 					{
-						return;
-					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_GEO_TRAIL;
-					auto& module_data = module.moduleData.initGeoTrail;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_numPointsMax = 16;
-					module_data.m_splitAngle = 0.0f;
-					module_data.m_centerOffset = 0.0f;
-					module_data.m_numSheets = 2;
-					module_data.m_fadeInDistance = 0.0f;
-					module_data.m_fadeOutDistance = 0.0f;
-					module_data.m_tileOffset.min = 0.0f;
-					module_data.m_tileOffset.max = 0.0f;
-					module_data.m_useLocalVelocity = false;
-					module_data.m_useVerticalTexture = false;
-					module_data.m_cameraFacing = false;
-					module_data.m_fixLeadingEdge = false;
-					module_data.m_clampUVs = false;
-
-					module_data.m_splitDistance = 8.0f;
-					module_data.m_tileDistance = 8.0f;
-					module_data.m_scrollTime = 0.0f;
-
-					const auto* trail = static_cast<const t7_trail_def*>(
-						static_cast<const void*>(elem->extended.trailDef));
-					if (is_readable(trail, sizeof(t7_trail_def)))
-					{
-						module_data.m_splitDistance = static_cast<float>(trail->repeatDist);
-						module_data.m_tileDistance = static_cast<float>(trail->repeatDist);
-						module_data.m_scrollTime = trail->scrollTimeMsec / 1000.0f;
-					}
-
-					modules.push_back(module);
-				}
-
-				void generate_init_model_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					if (elem->elemType != T7_ELEM_TYPE_MODEL)
-					{
-						return;
-					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_MODEL;
-					auto& module_data = module.moduleData.initModel;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_usePhysics = (elem->flags & T7_FX_ELEM_USE_MODEL_PHYSICS) != 0;
-					module_data.m_motionBlurHQ = false;
-
-					const auto visual_count = elem->visualCount;
-					if (!visual_count)
-					{
-						return;
-					}
-
-					module_data.m_linkedAssetList.numAssets = visual_count;
-					module_data.m_linkedAssetList.assetList =
-						ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(visual_count);
-
-					if (visual_count > 1)
-					{
-						if (!is_readable(elem->visuals.array, sizeof(FxElemVisuals) * visual_count))
+						const auto* model = elem->visualCount == 1 ? elem->visuals.instance.model : elem->visuals.array[i].model;
+						if (const auto* name = asset_name(model))
 						{
-							return;
-						}
-
-						for (auto i = 0; i < visual_count; i++)
-						{
-							module_data.m_linkedAssetList.assetList[i].model =
-								alias_asset<i7::XModel>(asset_name(elem->visuals.array[i].model), *ctx.allocator);
+							names.push_back(name);
 						}
 					}
-					else
+					if (names.empty())
 					{
-						module_data.m_linkedAssetList.assetList[0].model =
-							alias_asset<i7::XModel>(asset_name(elem->visuals.instance.model), *ctx.allocator);
+						return;
 					}
-
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_MODEL);
+					auto& data = module.moduleData.initModel;
+					data.m_linkedAssetList.numAssets = static_cast<int>(names.size());
+					data.m_linkedAssetList.assetList = ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(names.size());
+					for (auto i = 0u; i < names.size(); i++)
+					{
+						data.m_linkedAssetList.assetList[i].model = alias_asset<i7::XModel>(names[i], *ctx.allocator);
+					}
+					ctx.system_flags |= i7::PARTICLE_SYSTEM_DEF_FLAG_HAS_NON_SPRITES;
 					modules.push_back(module);
 				}
 
-				void generate_init_runner_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				// a runner spawns its visual effects as children (an aimed spot light's runner: the effect holding its light)
+				void generate_init_runner_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
 				{
-					if (elem->elemType != T7_ELEM_TYPE_RUNNER)
+					const auto* elem = ctx.elem;
+					std::vector<std::string> names;
+					if (ctx.element_part == part::spot_runner)
 					{
-						return;
+						names.push_back(ctx.light_child);
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_RUNNER;
-					auto& module_data = module.moduleData.initRunner;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					const auto visual_count = elem->visualCount;
-					if (!visual_count)
+					else if (elem->elemType == T7_ELEM_TYPE_RUNNER)
 					{
-						return;
-					}
-
-					module_data.m_linkedAssetList.numAssets = visual_count;
-					module_data.m_linkedAssetList.assetList =
-						ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(visual_count);
-
-					if (visual_count > 1)
-					{
-						if (!is_readable(elem->visuals.array, sizeof(FxElemVisuals) * visual_count))
+						for (auto i = 0; i < elem->visualCount; i++)
 						{
-							return;
-						}
-
-						for (auto i = 0; i < visual_count; i++)
-						{
-							module_data.m_linkedAssetList.assetList[i].particleSystem =
-								alias_asset<i7::ParticleSystemDef>(asset_name(elem->visuals.array[i].effectDef.handle),
-									*ctx.allocator);
+							const auto& visual = elem->visualCount == 1 ? elem->visuals.instance : elem->visuals.array[i];
+							const auto* name = asset_name(visual.effectDef.handle);
+							if (name && *name)
+							{
+								names.push_back(ctx.refs->effect(name));
+							}
 						}
 					}
-					else
-					{
-						module_data.m_linkedAssetList.assetList[0].particleSystem =
-							alias_asset<i7::ParticleSystemDef>(asset_name(elem->visuals.instance.effectDef.handle),
-								*ctx.allocator);
-					}
-
-					modules.push_back(module);
-				}
-
-				void generate_init_decal_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
-				{
-					if (elem->elemType != T7_ELEM_TYPE_DECAL)
+					if (names.empty())
 					{
 						return;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_DECAL;
-					auto& module_data = module.moduleData.initDecal;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_fadeInTime = static_cast<unsigned short>(elem->fadeInRange.base);
-					module_data.m_fadeOutTime = static_cast<unsigned short>(elem->fadeOutRange.base);
-					module_data.m_stoppableFadeOutTime = 0;
-					module_data.m_lerpWaitTime = 1280;
-					module_data.m_lerpColor.v[0] = 1.0f;
-					module_data.m_lerpColor.v[1] = 1.0f;
-					module_data.m_lerpColor.v[2] = 1.0f;
-					module_data.m_lerpColor.v[3] = 1.0f;
-
-					const auto visual_count = elem->visualCount;
-					if (!visual_count || !is_readable(elem->visuals.markArray,
-						sizeof(FxElemMarkVisuals) * visual_count))
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_RUNNER);
+					auto& data = module.moduleData.initRunner;
+					data.m_linkedAssetList.numAssets = static_cast<int>(names.size());
+					data.m_linkedAssetList.assetList = ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(names.size());
+					for (auto i = 0u; i < names.size(); i++)
 					{
-						return;
+						data.m_linkedAssetList.assetList[i].particleSystem = alias_asset<i7::ParticleSystemDef>(names[i], *ctx.allocator);
 					}
-
-					module_data.m_linkedAssetList.numAssets = visual_count;
-					module_data.m_linkedAssetList.assetList =
-						ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(visual_count);
-
-					for (auto i = 0; i < visual_count; i++)
-					{
-						auto& dest = module_data.m_linkedAssetList.assetList[i].decal;
-						dest.materials[0] = material_alias(elem->visuals.markArray[i].materials[0], *ctx.allocator);
-						dest.materials[1] = material_alias(elem->visuals.markArray[i].materials[1], *ctx.allocator);
-						dest.materials[2] = material_alias(elem->visuals.markArray[i].materials[1], *ctx.allocator);
-					}
-
+					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_CHILD_EFFECTS;
 					modules.push_back(module);
 				}
 
-				void generate_init_spawn_shape_box_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				// spawnOrigin: a box of offsets per axis (base + random x amplitude), in world axes unless the element spawns
+				// relative to the effect
+				void generate_init_spawn_shape_box_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
 				{
-					bool has_origin = false;
+					const auto* elem = ctx.elem;
+					auto any = false;
 					for (auto i = 0; i < 3; i++)
 					{
-						has_origin |= elem->spawnOrigin[i].base != 0.0f ||
-							elem->spawnOrigin[i].amplitude != 0.0f;
+						any |= elem->spawnOrigin[i].base != 0.0f || elem->spawnOrigin[i].amplitude != 0.0f;
 					}
-
-					if (!has_origin)
+					if (!any)
 					{
 						return;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_SPAWN_SHAPE_BOX;
-					auto& module_data = module.moduleData.initSpawnShapeBox;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					if ((elem->flags & T7_FX_ELEM_RUN_MASK) == T7_FX_ELEM_RUN_RELATIVE_TO_WORLD &&
-						elem->elemType != T7_ELEM_TYPE_TRAIL)
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_SPAWN_SHAPE_BOX);
+					auto& data = module.moduleData.initSpawnShapeBox;
+					if ((elem->flags & T7_FX_ELEM_SPAWN_RELATIVE_TO_EFFECT) == 0 && elem->elemType != T7_ELEM_TYPE_TRAIL)
 					{
-						module_data.m_flags |= i7::PARTICLE_MODULE_FLAG_USE_WORLD_SPACE;
+						data.m_flags |= i7::PARTICLE_MODULE_FLAG_USE_WORLD_SPACE;
 					}
-
-					module_data.m_axisFlags = i7::PARTICLE_MODULE_AXES_FLAG_ALL;
-					module_data.m_spawnFlags = 0;
-					module_data.m_normalAxis = 0;
-					module_data.m_spawnType = 0;
-					module_data.m_volumeCubeRoot = 0.0f;
-
+					data.m_axisFlags = i7::PARTICLE_MODULE_AXES_FLAG_ALL;
 					for (auto i = 0; i < 3; i++)
 					{
-						module_data.m_dimensionsMin.v[i] = elem->spawnOrigin[i].base;
-						module_data.m_dimensionsMax.v[i] = elem->spawnOrigin[i].base + elem->spawnOrigin[i].amplitude;
+						data.m_dimensionsMin.v[i] = elem->spawnOrigin[i].base;
+						data.m_dimensionsMax.v[i] = elem->spawnOrigin[i].base + elem->spawnOrigin[i].amplitude;
 					}
-					module_data.m_dimensionsMin.v[3] = 0.0f;
-					module_data.m_dimensionsMax.v[3] = 0.0f;
-
 					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_SPAWN_SHAPE;
-
 					modules.push_back(module);
 				}
 
-				void generate_init_spawn_shape_sphere_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				void generate_init_spawn_shape_sphere_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
 				{
+					const auto* elem = ctx.elem;
 					if ((elem->flags & T7_FX_ELEM_SPAWN_OFFSET_MASK) != T7_FX_ELEM_SPAWN_OFFSET_SPHERE)
 					{
 						return;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_SPAWN_SHAPE_SPHERE;
-					auto& module_data = module.moduleData.initSpawnShapeSphere;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_axisFlags = i7::PARTICLE_MODULE_AXES_FLAG_ALL;
-					module_data.m_spawnFlags = 0;
-					module_data.m_normalAxis = 0;
-					module_data.m_spawnType = 0;
-					module_data.m_volumeCubeRoot = 0.0f;
-
-					module_data.m_radius.min = elem->spawnOffsetRadius.base;
-					module_data.m_radius.max = elem->spawnOffsetRadius.base + elem->spawnOffsetRadius.amplitude;
-
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_SPAWN_SHAPE_SPHERE);
+					auto& data = module.moduleData.initSpawnShapeSphere;
+					data.m_axisFlags = i7::PARTICLE_MODULE_AXES_FLAG_ALL;
+					data.m_radius.min = elem->spawnOffsetRadius.base;
+					data.m_radius.max = elem->spawnOffsetRadius.base + elem->spawnOffsetRadius.amplitude;
 					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_SPAWN_SHAPE;
-
 					modules.push_back(module);
 				}
 
-				void generate_init_spawn_shape_cylinder_module(convert_context& ctx, FxElemDef* elem,
-					std::vector<i7::ParticleModuleDef>& modules)
+				// IW7's axis quaternion, half height from the height range
+				void generate_init_spawn_shape_cylinder_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
 				{
+					const auto* elem = ctx.elem;
 					if ((elem->flags & T7_FX_ELEM_SPAWN_OFFSET_MASK) != T7_FX_ELEM_SPAWN_OFFSET_CYLINDER)
 					{
 						return;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = i7::PARTICLE_MODULE_INIT_SPAWN_SHAPE_CYLINDER;
-					auto& module_data = module.moduleData.initSpawnShapeCylinder;
-					module_data.type = module.moduleType;
-					module_data.m_flags = 0;
-
-					module_data.m_axisFlags = i7::PARTICLE_MODULE_AXES_FLAG_ALL;
-					module_data.m_spawnFlags = 0;
-					module_data.m_normalAxis = 0;
-					module_data.m_spawnType = 0;
-					module_data.m_volumeCubeRoot = 0.0f;
-
-					module_data.m_hasRotation = true;
-					module_data.m_rotateCalculatedOffset = false;
-
-					module_data.m_directionQuat.v[0] = 0.0f;
-					module_data.m_directionQuat.v[1] = 0.7071067690849304f;
-					module_data.m_directionQuat.v[2] = 0.0f;
-					module_data.m_directionQuat.v[3] = 0.7071067690849304f;
-
-					module_data.m_halfHeight = (elem->spawnOffsetHeight.base +
-						elem->spawnOffsetHeight.amplitude * 0.5f) * 0.5f;
-
-					module_data.m_radius.min = elem->spawnOffsetRadius.base;
-					module_data.m_radius.max = elem->spawnOffsetRadius.base + elem->spawnOffsetRadius.amplitude;
-
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_SPAWN_SHAPE_CYLINDER);
+					auto& data = module.moduleData.initSpawnShapeCylinder;
+					data.m_axisFlags = i7::PARTICLE_MODULE_AXES_FLAG_ALL;
+					data.m_hasRotation = true;
+					data.m_directionQuat.v[1] = 0.7071067690849304f;
+					data.m_directionQuat.v[3] = 0.7071067690849304f;
+					data.m_radius.min = elem->spawnOffsetRadius.base;
+					data.m_radius.max = elem->spawnOffsetRadius.base + elem->spawnOffsetRadius.amplitude;
+					data.m_halfHeight = elem->spawnOffsetHeight.amplitude * 0.5f;
+					data.unk.v[0] = elem->spawnOffsetHeight.base + data.m_halfHeight;
 					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_SPAWN_SHAPE;
-
 					modules.push_back(module);
 				}
 
-				void generate_test_module(convert_context& ctx, FxEffectDefRef ref,
-					i7::ParticleModuleType type, bool kill, unsigned __int64 state_flag,
-					std::vector<i7::ParticleModuleDef>& modules)
+				void generate_init_geo_trail_module(convert_context& ctx, std::vector<i7::ParticleModuleDef>& modules)
+				{
+					if (ctx.elem->elemType != T7_ELEM_TYPE_TRAIL)
+					{
+						return;
+					}
+					auto module = new_module(i7::PARTICLE_MODULE_INIT_GEO_TRAIL);
+					auto& data = module.moduleData.initGeoTrail;
+					data.m_numPointsMax = 16;
+					data.m_numSheets = 2;
+					data.m_splitDistance = 8.0f;
+					data.m_tileDistance = 8.0f;
+					const auto* trail = static_cast<const t7_trail_def*>(ctx.elem->extended.trailDef);
+					if (is_readable(trail, sizeof(t7_trail_def)))
+					{
+						data.m_splitDistance = static_cast<float>(trail->repeat_dist);
+						data.m_tileDistance = static_cast<float>(trail->repeat_dist);
+						data.m_scrollTime = trail->scroll_time_msec / 1000.0f;
+						data.m_fadeInDistance = trail->fade_in_dist;
+						data.m_fadeOutDistance = trail->fade_out_dist;
+					}
+					modules.push_back(module);
+				}
+
+				// ---- test modules: the effects particles spawn -----------------------------------------------
+
+				void generate_test_module(convert_context& ctx, const FxEffectDefRef ref, const i7::ParticleModuleType type,
+					const bool kill, std::vector<i7::ParticleModuleDef>& modules)
 				{
 					const auto* name = asset_name(ref.handle);
-					if (!name)
+					if (!name || !*name)
 					{
 						return;
 					}
-
-					const std::string effect_name = ctx.fx_name ? ctx.fx_name : "";
-					const std::string child_name = name;
-					if (type == i7::PARTICLE_MODULE_TEST_DEATH &&
-						effect_name.find("fx_idgun_vortex") != std::string::npos &&
-						effect_name.find("fx_idgun_vortex_explo") == std::string::npos &&
-						child_name.find("fx_idgun_") != std::string::npos &&
-						child_name.find("hole_xl") != std::string::npos)
+					auto module = new_module(type);
+					auto& data = module.moduleData.testDeath;
+					data.m_moduleIndex = static_cast<unsigned short>(ctx.test_module_index++);
+					data.m_eventHandlerData.m_kill = kill;
+					data.m_eventHandlerData.m_linkedAssetList.numAssets = 1;
+					data.m_eventHandlerData.m_linkedAssetList.assetList = ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(1);
+					data.m_eventHandlerData.m_linkedAssetList.assetList[0].particleSystem =
+						alias_asset<i7::ParticleSystemDef>(ctx.refs->effect(name), *ctx.allocator);
+					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_CHILD_EFFECTS;
+					if (type == i7::PARTICLE_MODULE_TEST_IMPACT)
 					{
-						return;
+						ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HANDLE_ON_IMPACT;
 					}
-
-					i7::ParticleModuleDef module{};
-					module.moduleType = type;
-					auto& module_data = module.moduleData.testDeath;
-					module_data.type = type;
-					module_data.m_flags = 0;
-
-					module_data.m_moduleIndex = static_cast<unsigned short>(ctx.test_module_index++);
-
-					module_data.m_eventHandlerData.m_kill = kill;
-
-					module_data.m_eventHandlerData.m_linkedAssetList.numAssets = 1;
-					module_data.m_eventHandlerData.m_linkedAssetList.assetList =
-						ctx.allocator->allocate_array<i7::ParticleLinkedAssetDef>(1);
-					module_data.m_eventHandlerData.m_linkedAssetList.assetList[0].particleSystem =
-						alias_asset<i7::ParticleSystemDef>(ctx.allocator->duplicate_string(name), *ctx.allocator);
-
-					ctx.state_flags |= state_flag;
-
 					modules.push_back(module);
 				}
 
-				void store_group(convert_context& ctx, i7::ParticleModuleGroupDef* group,
-					const std::vector<i7::ParticleModuleDef>& modules)
+				void store_group(convert_context& ctx, i7::ParticleModuleGroupDef* group, const std::vector<i7::ParticleModuleDef>& modules)
 				{
 					group->numModules = static_cast<int>(modules.size());
 					group->disabled = false;
 					group->moduleDefs = nullptr;
-
 					if (!modules.empty())
 					{
 						group->moduleDefs = ctx.allocator->allocate_array<i7::ParticleModuleDef>(modules.size());
-						std::memcpy(group->moduleDefs, modules.data(),
-							modules.size() * sizeof(i7::ParticleModuleDef));
+						std::memcpy(group->moduleDefs, modules.data(), modules.size() * sizeof(i7::ParticleModuleDef));
 					}
 				}
 
-				void convert_elem(convert_context& ctx, i7::ParticleEmitterDef* emitter,
-					FxElemDef* elem, bool looping)
+				// ---- emitters --------------------------------------------------------------------------------
+
+				unsigned int convert_elem_type(const FxElemDef* elem, const convert_context& ctx)
 				{
+					switch (elem->elemType)
+					{
+					case T7_ELEM_TYPE_SPRITE_BILLBOARD: return i7::PARTICLE_ELEMENT_TYPE_BILLBOARD_SPRITE;
+					case T7_ELEM_TYPE_SPRITE_ORIENTED:
+					case T7_ELEM_TYPE_SPRITE_ROTATED: return i7::PARTICLE_ELEMENT_TYPE_ORIENTED_SPRITE;
+					case T7_ELEM_TYPE_TAIL:
+					case T7_ELEM_TYPE_LINE: return i7::PARTICLE_ELEMENT_TYPE_TAIL;
+					case T7_ELEM_TYPE_TRAIL: return i7::PARTICLE_ELEMENT_TYPE_GEO_TRAIL;
+					case T7_ELEM_TYPE_CLOUD:
+						// IW7 draws a cloud with particle_cloud techsets only (a quad material draws other effects' records)
+						return ctx.has_material && ctx.material.shade == effect_material::shading::cloud
+							? i7::PARTICLE_ELEMENT_TYPE_CLOUD : i7::PARTICLE_ELEMENT_TYPE_BILLBOARD_SPRITE;
+					case T7_ELEM_TYPE_MODEL: return i7::PARTICLE_ELEMENT_TYPE_MODEL;
+					case T7_ELEM_TYPE_OMNI_LIGHT:
+					case T7_ELEM_TYPE_SPOT_LIGHT:
+					{
+						const auto* visual = elem->visualCount == 1 ? elem->visuals.instance.anonymous : nullptr;
+						const auto* config = visual ? reinterpret_cast<const GfxConfig_Light*>(static_cast<const char*>(visual) + 8) : nullptr;
+						const auto spot = config && is_readable(config, sizeof(GfxConfig_Light)) && config->type != 4;
+						return spot ? i7::PARTICLE_ELEMENT_TYPE_LIGHT_SPOT : i7::PARTICLE_ELEMENT_TYPE_LIGHT_OMNI;
+					}
+					case T7_ELEM_TYPE_DECAL: return i7::PARTICLE_ELEMENT_TYPE_DECAL;
+					case T7_ELEM_TYPE_RUNNER: return i7::PARTICLE_ELEMENT_TYPE_RUNNER;
+					default: return i7::PARTICLE_ELEMENT_TYPE_BILLBOARD_SPRITE;
+					}
+				}
+
+				// false: the element is left out (said why)
+				bool convert_elem(convert_context& ctx, i7::ParticleEmitterDef* emitter, const bool looping)
+				{
+					const auto* elem = ctx.elem;
 					ctx.emitter_flags = 0;
 					ctx.state_flags = 0;
+					ctx.has_material = false;
+					ctx.material = {};
+					const auto whole = ctx.element_part == part::whole;
+					const auto runner_part = ctx.element_part == part::spot_runner;
+					const auto light_part = ctx.element_part == part::spot_light;
+					const auto no_visual = whole && is_sprite_type(elem->elemType) && !elem->visualCount;
 
-					emitter->flags = 0;
-
-					emitter->particleSpawnRate.min = 5.0f;
-					emitter->particleSpawnRate.max = 5.0f;
-
-					emitter->particleBurstCount.min = 1;
-					emitter->particleBurstCount.max = 1;
-
-					emitter->emitterLife.min = 0.0f;
-					emitter->emitterLife.max = 0.0f;
-
-					emitter->emitterDelay.min = 0.0f;
-					emitter->emitterDelay.max = 0.0f;
-
-					if (looping)
+					// the init group first: the material module decides how the rest converts
+					std::vector<i7::ParticleModuleDef> init_modules;
+					generate_init_spawn_module(ctx, init_modules);
+					generate_init_attributes_module(ctx, init_modules);
+					if (no_visual)
 					{
-						const auto spawn_count_min = std::max(0, elem->spawn.looping.spawnCount.base);
-						const auto spawn_count_max = std::max(spawn_count_min,
-							elem->spawn.looping.spawnCount.base + elem->spawn.looping.spawnCount.amplitude);
-
-						if (elem->spawn.looping.count == 0x7FFFFFFF)
+						// BO3 draws nothing for it; it still spawns what its particles spawn: then a billboard without a
+						// material (as stock's material-less sound billboards) carries them
+						const auto spawns = asset_name(elem->effectOnDeath.handle) || asset_name(elem->effectOnImpact.handle) ||
+							asset_name(elem->effectEmitted.handle);
+						if (!spawns)
 						{
-							const auto interval = std::max(1, elem->spawn.looping.intervalMsec);
-							const auto intervals_per_second = 1000.0f / static_cast<float>(interval);
-							emitter->particleSpawnRate.min = spawn_count_min * intervals_per_second;
-							emitter->particleSpawnRate.max = spawn_count_max * intervals_per_second;
-
-							emitter->particleCountMax = 1;
+							ZONETOOL_INFO("effect \"%s\": element %d has no visuals and spawns nothing; left out (BO3 draws nothing for it)",
+								ctx.effect->name, ctx.elem_index);
+							return false;
 						}
-						else
+						ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_IS_SPRITE;
+						ctx.system_flags |= i7::PARTICLE_SYSTEM_DEF_FLAG_HAS_SPRITES;
+					}
+					else if (whole && is_sprite_type(elem->elemType) && !generate_init_material_module(ctx, init_modules))
+					{
+						ZONETOOL_WARNING("effect \"%s\": element %d (type %u) has no material that converts; left out", ctx.effect->name,
+							ctx.elem_index, elem->elemType);
+						return false;
+					}
+					if (whole && !no_visual)
+					{
+						generate_init_cloud_module(ctx, init_modules);
+						generate_init_tail_module(ctx, init_modules);
+						generate_init_geo_trail_module(ctx, init_modules);
+					}
+					if (!runner_part)
+					{
+						generate_init_light_module(ctx, init_modules);
+					}
+					if (whole)
+					{
+						generate_init_model_module(ctx, init_modules);
+					}
+					if (!light_part)
+					{
+						generate_init_runner_module(ctx, init_modules);
+					}
+					if (whole && !no_visual)
+					{
+						generate_init_oriented_sprite_module(ctx, init_modules);
+						generate_init_atlas_module(ctx, init_modules);
+					}
+					generate_init_relative_velocity_module(ctx, init_modules);
+					if (whole)
+					{
+						generate_init_rotation_module(ctx, init_modules);
+					}
+					if (!light_part)
+					{
+						generate_init_rotation3d_module(ctx, init_modules);
+						generate_init_spawn_shape_box_module(ctx, init_modules);
+						generate_init_spawn_shape_cylinder_module(ctx, init_modules);
+						generate_init_spawn_shape_sphere_module(ctx, init_modules);
+					}
+
+					std::vector<i7::ParticleModuleDef> update_modules;
+					if (!runner_part)
+					{
+						generate_color_module(ctx, update_modules);
+						generate_emissive_module(ctx, update_modules);
+						generate_size_module(ctx, update_modules);
+					}
+					if (whole)
+					{
+						generate_rotation_module(ctx, update_modules);
+					}
+					if (!light_part)
+					{
+						generate_velocity_modules(ctx, update_modules);
+						generate_gravity_module(ctx, update_modules);
+					}
+					if (whole && !no_visual)
+					{
+						generate_tail_orientation_module(ctx, update_modules);
+					}
+
+					ctx.test_module_index = 0;
+					std::vector<i7::ParticleModuleDef> test_modules;
+					if (!light_part)
+					{
+						generate_test_module(ctx, elem->effectOnDeath, i7::PARTICLE_MODULE_TEST_DEATH, false, test_modules);
+						generate_test_module(ctx, elem->effectOnImpact, i7::PARTICLE_MODULE_TEST_IMPACT, false, test_modules);
+						generate_test_module(ctx, elem->effectEmitted, i7::PARTICLE_MODULE_TEST_BIRTH, false, test_modules);
+					}
+
+					*emitter = {};
+					emitter->particleSpawnRate = { 5.0f, 5.0f };
+					emitter->particleBurstCount = { 1, 1 };
+					emitter->particleLife.min = elem->lifeSpanMsec.base / 1000.0f;
+					emitter->particleLife.max = (elem->lifeSpanMsec.base + elem->lifeSpanMsec.amplitude) / 1000.0f;
+					emitter->particleDelay.min = elem->spawnDelayMsec.base / 1000.0f;
+					emitter->particleDelay.max = (elem->spawnDelayMsec.base + elem->spawnDelayMsec.amplitude) / 1000.0f;
+
+					if (light_part)
+					{
+						// one light for its runner particle's life, as stock's child (burst of 1, no delay)
+						emitter->particleSpawnRate = { 1.0f, 1.0f };
+						emitter->particleDelay = { 0.0f, 0.0f };
+						emitter->particleCountMax = 1;
+						ctx.emitter_flags |= i7::PARTICLE_EMITTER_DEF_FLAG_USE_BURST_MODE;
+					}
+					else if (looping)
+					{
+						// spawnCount particles every intervalMsec, count times (0x7FFFFFFF: for ever)
+						const auto interval = std::max(1, elem->spawn.looping.intervalMsec);
+						const auto per_second = 1000.0f / static_cast<float>(interval);
+						const auto spawn_min = std::max(0, elem->spawn.looping.spawnCount.base);
+						const auto spawn_max = std::max(spawn_min, elem->spawn.looping.spawnCount.base + elem->spawn.looping.spawnCount.amplitude);
+						emitter->particleSpawnRate.min = spawn_min * per_second;
+						emitter->particleSpawnRate.max = spawn_max * per_second;
+						auto alive = static_cast<int>(std::ceil(emitter->particleSpawnRate.max * std::max(0.0f, emitter->particleLife.max))) + 1;
+						if (elem->spawn.looping.count != 0x7FFFFFFF)
 						{
-							const auto interval = elem->spawn.looping.intervalMsec;
-							const auto interval_count = elem->spawn.looping.count;
-
-							const auto emitter_life = (interval_count * interval) / 1000.0f;
-							const auto intervals_per_second = interval > 0
-								? 1000.0f / static_cast<float>(interval) : 0.0f;
-
-							emitter->particleSpawnRate.min = spawn_count_min * intervals_per_second;
-							emitter->particleSpawnRate.max = spawn_count_max * intervals_per_second;
-
-							emitter->emitterLife.min = emitter_life;
-							emitter->emitterLife.max = emitter_life;
-
-							emitter->particleCountMax = std::max(1,
-								interval_count * spawn_count_max);
+							const auto count = std::max(1, elem->spawn.looping.count);
+							emitter->emitterLife.min = emitter->emitterLife.max = count * interval / 1000.0f;
+							alive = std::min(alive, count * std::max(1, spawn_max));
 						}
+						emitter->particleCountMax = static_cast<unsigned int>(std::max(1, alive));
 					}
 					else
 					{
 						emitter->particleBurstCount.min = elem->spawn.oneShot.count.base;
-						emitter->particleBurstCount.max = elem->spawn.oneShot.count.base +
-							elem->spawn.oneShot.count.amplitude;
-						emitter->particleCountMax = std::max(1, emitter->particleBurstCount.max);
-
+						emitter->particleBurstCount.max = elem->spawn.oneShot.count.base + elem->spawn.oneShot.count.amplitude;
+						emitter->particleCountMax = static_cast<unsigned int>(std::max(1, emitter->particleBurstCount.max));
 						ctx.emitter_flags |= i7::PARTICLE_EMITTER_DEF_FLAG_USE_BURST_MODE;
 					}
 
-					emitter->particleLife.min = elem->lifeSpanMsec.base / 1000.0f;
-					emitter->particleLife.max = elem->lifeSpanMsec.base / 1000.0f +
-						elem->lifeSpanMsec.amplitude / 1000.0f;
-
-					if (looping && elem->spawn.looping.count == 0x7FFFFFFF)
+					if (elem->fadeInRange.amplitude != 0.0f || elem->fadeOutRange.amplitude != 0.0f)
 					{
-						const auto concurrent = static_cast<unsigned int>(std::ceil(
-							emitter->particleSpawnRate.max * std::max(0.0f, emitter->particleLife.max)));
-						emitter->particleCountMax = std::max(1u, concurrent);
+						ZONETOOL_INFO("effect \"%s\": element %d fades by camera distance: in [%g, %g], out [%g, %g] (not converted)",
+							ctx.effect->name, ctx.elem_index, elem->fadeInRange.base, elem->fadeInRange.base + elem->fadeInRange.amplitude,
+							elem->fadeOutRange.base, elem->fadeOutRange.base + elem->fadeOutRange.amplitude);
 					}
-
-					emitter->particleDelay.min = elem->spawnDelayMsec.base / 1000.0f;
-					emitter->particleDelay.max = elem->spawnDelayMsec.base / 1000.0f +
-						elem->spawnDelayMsec.amplitude / 1000.0f;
-
-					emitter->spawnRangeSq.min = elem->spawnRange.base;
-					emitter->spawnRangeSq.max = elem->spawnRange.base + elem->spawnRange.amplitude;
-					emitter->spawnRangeSq.min *= emitter->spawnRangeSq.min;
-					emitter->spawnRangeSq.max *= emitter->spawnRangeSq.max;
-
-					emitter->spawnFrustumCullRadius = elem->spawnFrustumCullRadius;
-
-					emitter->randomSeed = 0;
-
-					emitter->particleSpawnShapeRange.min = 0.0f;
-					emitter->particleSpawnShapeRange.max = 0.0f;
-
-					emitter->groupIDs[0] = 0;
-					emitter->groupIDs[1] = 0;
-					emitter->groupIDs[2] = 0;
-					emitter->groupIDs[3] = 0;
-
-					emitter->unk1 = 0.0f;
+					// BO3 spawns only while the camera is within [base, base + amplitude] (no range when the amplitude is 0);
+					// its fade in / out ranges are left out (IW7's fadeOutMaxDistance is not mapped). An aimed light's
+					// runner does the spawning.
+					if (elem->spawnRange.amplitude != 0.0f && !light_part)
+					{
+						const auto range_min = std::max(0.0f, elem->spawnRange.base);
+						const auto range_max = elem->spawnRange.base + elem->spawnRange.amplitude;
+						emitter->spawnRangeSq.min = range_min * range_min;
+						emitter->spawnRangeSq.max = range_max * range_max;
+					}
+					emitter->spawnFrustumCullRadius = light_part ? 0.0f : elem->spawnFrustumCullRadius;
 					emitter->unk2 = 100.0f;
-
-					ctx.emitter_flags |= (elem->flags & T7_FX_ELEM_DRAW_PAST_FOG) != 0
-						? i7::PARTICLE_EMITTER_DEF_FLAG_DRAW_PAST_FOG : 0;
+					if (elem->flags & T7_FX_ELEM_DRAW_PAST_FOG)
+					{
+						ctx.emitter_flags |= i7::PARTICLE_EMITTER_DEF_FLAG_DRAW_PAST_FOG;
+					}
 
 					emitter->numStates = 1;
 					emitter->stateDefs = ctx.allocator->allocate<i7::ParticleStateDef>();
-
 					auto* state = emitter->stateDefs;
+					state->elementType = runner_part ? i7::PARTICLE_ELEMENT_TYPE_RUNNER
+						: light_part ? i7::PARTICLE_ELEMENT_TYPE_LIGHT_SPOT
+						: no_visual ? i7::PARTICLE_ELEMENT_TYPE_BILLBOARD_SPRITE : convert_elem_type(elem, ctx);
+					state->moduleGroupDefs = ctx.allocator->allocate_array<i7::ParticleModuleGroupDef>(i7::PARTICLE_MODULE_GROUP_COUNT);
+					store_group(ctx, &state->moduleGroupDefs[i7::PARTICLE_MODULE_GROUP_INIT], init_modules);
+					store_group(ctx, &state->moduleGroupDefs[i7::PARTICLE_MODULE_GROUP_UPDATE], update_modules);
+					store_group(ctx, &state->moduleGroupDefs[i7::PARTICLE_MODULE_GROUP_TEST], test_modules);
 
-					state->elementType = convert_elem_type(elem);
-					state->flags = 0;
-
-					ctx.state_flags |= (elem->flags & T7_FX_ELEM_USE_MODEL_PHYSICS) != 0
-						? i7::PARTICLE_STATE_DEF_FLAG_USE_PHYSICS : 0;
-					ctx.state_flags |= (elem->flags & T7_FX_ELEM_USE_COLLISION) != 0
-						? i7::PARTICLE_STATE_DEF_FLAG_REQUIRES_WORLD_COLLISION : 0;
-					ctx.state_flags |= (elem->flags & T7_FX_ELEM_DRAW_WITH_VIEWMODEL) != 0
-						? i7::PARTICLE_STATE_DEF_FLAG_DRAW_WITH_VIEW_MODEL : 0;
-					ctx.state_flags |= (elem->flags & T7_FX_ELEM_BLOCK_SIGHT) != 0
-						? i7::PARTICLE_STATE_DEF_FLAG_BLOCKS_SIGHT : 0;
-
-					state->moduleGroupDefs =
-						ctx.allocator->allocate_array<i7::ParticleModuleGroupDef>(i7::PARTICLE_MODULE_GROUP_COUNT);
-
-					{
-						std::vector<i7::ParticleModuleDef> init_modules{};
-						generate_init_spawn_module(ctx, elem, init_modules);
-						generate_init_attributes_module(ctx, elem, init_modules);
-						generate_init_omni_light_module(ctx, elem, init_modules);
-						generate_init_tail_module(ctx, elem, init_modules);
-						generate_init_geo_trail_module(ctx, elem, init_modules);
-						generate_init_model_module(ctx, elem, init_modules);
-						generate_init_runner_module(ctx, elem, init_modules);
-						generate_init_decal_module(ctx, elem, init_modules);
-						generate_init_oriented_sprite_module(ctx, elem, init_modules);
-						generate_init_material_module(ctx, elem, init_modules);
-						generate_init_atlas_module(ctx, elem, init_modules);
-						generate_init_relative_velocity_module(ctx, elem, init_modules);
-						generate_init_rotation_module(ctx, elem, init_modules);
-						generate_init_rotation3d_module(ctx, elem, init_modules);
-						generate_init_spawn_shape_box_module(ctx, elem, init_modules);
-						generate_init_spawn_shape_sphere_module(ctx, elem, init_modules);
-						generate_init_spawn_shape_cylinder_module(ctx, elem, init_modules);
-
-						store_group(ctx, &state->moduleGroupDefs[i7::PARTICLE_MODULE_GROUP_INIT], init_modules);
-					}
-
-					{
-						std::vector<i7::ParticleModuleDef> update_modules{};
-						generate_color_module(ctx, elem, update_modules);
-						generate_intensity_module(ctx, elem, update_modules);
-						generate_size_module(ctx, elem, update_modules);
-						generate_rotation_module(ctx, elem, update_modules);
-						generate_velocity_module(ctx, elem, update_modules);
-						generate_gravity_module(ctx, elem, update_modules);
-
-						store_group(ctx, &state->moduleGroupDefs[i7::PARTICLE_MODULE_GROUP_UPDATE], update_modules);
-					}
-
-					{
-						ctx.test_module_index = 0;
-
-						std::vector<i7::ParticleModuleDef> test_modules{};
-						generate_test_module(ctx, elem->effectOnDeath, i7::PARTICLE_MODULE_TEST_DEATH,
-							false, 0, test_modules);
-						generate_test_module(ctx, elem->effectOnImpact, i7::PARTICLE_MODULE_TEST_IMPACT,
-							true, i7::PARTICLE_STATE_DEF_FLAG_HANDLE_ON_IMPACT, test_modules);
-						generate_test_module(ctx, elem->effectEmitted, i7::PARTICLE_MODULE_TEST_BIRTH,
-							false, i7::PARTICLE_STATE_DEF_FLAG_HAS_CHILD_EFFECTS, test_modules);
-
-						store_group(ctx, &state->moduleGroupDefs[i7::PARTICLE_MODULE_GROUP_TEST], test_modules);
-					}
-
-					emitter->flags |= ctx.emitter_flags;
-					state->flags |= ctx.state_flags;
+					emitter->flags = ctx.emitter_flags;
+					state->flags = ctx.state_flags;
+					return true;
 				}
+
+				std::string identity(const std::string& name)
+				{
+					return name;
+				}
+
+				effect_material::converted legacy_material(const Material* material, const FxElemDef*)
+				{
+					effect_material::converted out{};
+					const auto* entry = asset_name(material) ? DB_FindXAssetEntry(ASSET_TYPE_MATERIAL, asset_name(material), false) : nullptr;
+					const auto* full = entry && is_readable(entry->asset.header.material, sizeof(Material)) ? entry->asset.header.material : material;
+					out.name = material::get_converted_name(const_cast<Material*>(full));
+					return out;
+				}
+			}
+
+			const references& standalone_references()
+			{
+				static const references refs{ identity, legacy_material };
+				return refs;
+			}
+
+			namespace
+			{
+				void finish_system(i7::ParticleSystemDef* out, const unsigned int system_flags)
+				{
+					out->flags = system_flags | i7::PARTICLE_SYSTEM_DEF_FLAG_KILL_STOPPED_INFINITE_EFFECTS;
+					out->version = 15;
+					out->occlusionOverrideEmitterIndex = -1;
+					out->phaseOptions = i7::PARTICLE_PHASE_OPTION_PHASE_NEVER;
+					// stock ambient effects cull neither their drawing nor their update by the frustum (-1, -1)
+					out->drawFrustumCullRadius = -1.0f;
+					out->updateFrustumCullRadius = -1.0f;
+					out->sunDistance = 100000.0f;
+					out->editorRotation.v[3] = 1.0f;
+				}
+
+				// a spot light BO3 turns away from the effect's axis (its particle axis, 0x140207ED0, from the spawn angles and
+				// angular velocity; the light shines along it, 0x140201EA0)
+				bool aimed_spot(const FxElemDef* elem, const convert_context& ctx)
+				{
+					if (convert_elem_type(elem, ctx) != i7::PARTICLE_ELEMENT_TYPE_LIGHT_SPOT)
+					{
+						return false;
+					}
+					for (auto i = 0; i < 3; i++)
+					{
+						if (elem->spawnAngles[i].base != 0.0f || elem->spawnAngles[i].amplitude != 0.0f ||
+							elem->angularVelocity[i].base != 0.0f || elem->angularVelocity[i].amplitude != 0.0f)
+						{
+							return true;
+						}
+					}
+					return false;
+				}
+			}
+
+			zonetool::iw7::ParticleSystemDef* convert(FxEffectDef* asset, utils::memory::allocator& allocator, const references& refs,
+				std::vector<zonetool::iw7::ParticleSystemDef*>* children)
+			{
+				auto* out = allocator.allocate<i7::ParticleSystemDef>();
+				out->name = allocator.duplicate_string(refs.effect(asset->name));
+
+				convert_context ctx{};
+				ctx.allocator = &allocator;
+				ctx.refs = &refs;
+				ctx.effect = asset;
+
+				const auto count = asset->elemDefCountLooping + asset->elemDefCountOneShot + asset->elemDefCountEmission;
+				out->emitterDefs = allocator.allocate_array<i7::ParticleEmitterDef>(std::max(1, count));
+				auto converted = 0;
+				for (auto i = 0; i < count && is_readable(asset->elemDefs, sizeof(FxElemDef) * count); i++)
+				{
+					auto* elem = &asset->elemDefs[i];
+					ctx.elem = elem;
+					ctx.elem_index = i;
+					ctx.element_part = part::whole;
+					// ZT_FX_TRACE=<effect name>: logs each element's type, visuals and first visual state
+					if (const auto* trace = std::getenv("ZT_FX_TRACE"); trace && std::strstr(asset->name, trace))
+					{
+						const auto vis = get_vis_samples(elem);
+						const auto* c = vis.samples ? vis.samples[0].base.color : nullptr;
+						ZONETOOL_INFO("trace \"%s\" elem %d: type %u, visuals %u, flags 0x%X, colour %u %u %u %u, intensity %g, radius %g",
+							asset->name, i, elem->elemType, elem->visualCount, elem->flags, c ? c[0] : 0, c ? c[1] : 0, c ? c[2] : 0,
+							c ? c[3] : 0, vis.samples ? vis.samples[0].base.intensity : 0.0f, vis.samples ? vis.samples[0].base.radius : 0.0f);
+					}
+					// sounds, lens flares and the types without a visual have no conversion yet
+					if (elem->elemType > T7_ELEM_TYPE_RUNNER || elem->elemType == T7_ELEM_TYPE_SOUND ||
+						elem->elemType == T7_ELEM_TYPE_LENS_FLARE || elem->elemType == T7_ELEM_TYPE_UNKNOWN_9)
+					{
+						ZONETOOL_WARNING("effect \"%s\": element %d of type %u has no conversion; left out", asset->name, i, elem->elemType);
+						continue;
+					}
+					if (children && aimed_spot(elem, ctx))
+					{
+						// the light alone in an effect of its own, which the element's runner spawns, turned
+						auto* child = allocator.allocate<i7::ParticleSystemDef>();
+						child->name = allocator.duplicate_string(std::string(out->name) + "_l" + std::to_string(i));
+						child->emitterDefs = allocator.allocate_array<i7::ParticleEmitterDef>(1);
+						auto light = ctx;
+						light.system_flags = 0;
+						light.element_part = part::spot_light;
+						if (!convert_elem(light, &child->emitterDefs[0], false))
+						{
+							continue;
+						}
+						child->numEmitters = 1;
+						finish_system(child, light.system_flags);
+						children->push_back(child);
+						ctx.element_part = part::spot_runner;
+						ctx.light_child = child->name;
+					}
+					if (convert_elem(ctx, &out->emitterDefs[converted], i < asset->elemDefCountLooping))
+					{
+						converted++;
+					}
+				}
+				out->numEmitters = converted;
+				finish_system(out, ctx.system_flags);
+				return out;
+			}
+
+			zonetool::iw7::ParticleSystemDef* convert(FxEffectDef* asset, utils::memory::allocator& allocator, const references& refs)
+			{
+				return convert(asset, allocator, refs, nullptr);
 			}
 
 			zonetool::iw7::ParticleSystemDef* convert(FxEffectDef* asset, utils::memory::allocator& allocator)
 			{
-				const auto iw7_asset = allocator.allocate<i7::ParticleSystemDef>();
-
-				iw7_asset->name = asset->name;
-
-				convert_context ctx{};
-				ctx.allocator = &allocator;
-				ctx.system_flags = 0;
-				ctx.fx_name = asset->name;
-
-				const auto count = asset->elemDefCountLooping + asset->elemDefCountOneShot +
-					asset->elemDefCountEmission;
-
-				iw7_asset->numEmitters = 0;
-
-				if (count > 0 && is_readable(asset->elemDefs, sizeof(FxElemDef)))
-				{
-					iw7_asset->emitterDefs = allocator.allocate_array<i7::ParticleEmitterDef>(count);
-
-					auto converted = 0;
-					for (auto i = 0; i < count; i++)
-					{
-						if (!is_readable(&asset->elemDefs[i], sizeof(FxElemDef)))
-						{
-							break;
-						}
-
-						auto* elem = &asset->elemDefs[i];
-						ctx.elem_index = i;
-
-						if (!is_convertible_type(elem->elemType))
-						{
-							ZONETOOL_WARNING("vfx \"%s\": dropping element %i (unsupported type %u)",
-								asset->name, i, elem->elemType);
-							continue;
-						}
-
-						if (is_sprite_type(elem->elemType) &&
-							!element_has_resolvable_material_visual(ctx, elem))
-						{
-							ZONETOOL_WARNING("vfx \"%s\": dropping element %i (no resolvable material visual)",
-								asset->name, i);
-							continue;
-						}
-
-						convert_elem(ctx, &iw7_asset->emitterDefs[converted], elem,
-							i < asset->elemDefCountLooping);
-						converted++;
-					}
-
-					if (converted < count)
-					{
-						ZONETOOL_WARNING("vfx \"%s\" converted %i of its %i elements",
-							asset->name, converted, count);
-					}
-
-					iw7_asset->numEmitters = converted;
-				}
-
-				ctx.system_flags |= i7::PARTICLE_SYSTEM_DEF_FLAG_KILL_STOPPED_INFINITE_EFFECTS;
-
-				iw7_asset->flags = ctx.system_flags;
-
-				iw7_asset->version = 15;
-
-				iw7_asset->occlusionOverrideEmitterIndex = -1;
-
-				iw7_asset->phaseOptions = i7::PARTICLE_PHASE_OPTION_PHASE_NEVER;
-
-				iw7_asset->drawFrustumCullRadius = 0.0f;
-				iw7_asset->updateFrustumCullRadius = -1.0f;
-
-				iw7_asset->sunDistance = 100000.0f;
-
-				iw7_asset->preRollMSec = 0;
-
-				iw7_asset->editorPosition.v[0] = 0.0f;
-				iw7_asset->editorPosition.v[1] = 0.0f;
-				iw7_asset->editorPosition.v[2] = 0.0f;
-				iw7_asset->editorPosition.v[3] = 0.0f;
-
-				iw7_asset->editorRotation.v[0] = 0.0f;
-				iw7_asset->editorRotation.v[1] = 0.0f;
-				iw7_asset->editorRotation.v[2] = 0.0f;
-				iw7_asset->editorRotation.v[3] = 1.0f;
-
-				return iw7_asset;
+				return convert(asset, allocator, standalone_references());
 			}
 
-			void dump(FxEffectDef* asset)
+			void dump(FxEffectDef* asset, const references& refs)
 			{
 				if (!is_readable(asset, sizeof(FxEffectDef)) || !safe_name(asset->name))
 				{
 					return;
 				}
-
 				utils::memory::allocator allocator;
-				const auto converted_asset = convert(asset, allocator);
-				zonetool::iw7::particle_system::dump(converted_asset);
+				std::vector<zonetool::iw7::ParticleSystemDef*> children;
+				zonetool::iw7::particle_system::dump(convert(asset, allocator, refs, &children));
+				for (auto* child : children)
+				{
+					zonetool::iw7::particle_system::dump(child);
+				}
+			}
+
+			void dump(FxEffectDef* asset)
+			{
+				dump(asset, standalone_references());
 			}
 		}
 	}

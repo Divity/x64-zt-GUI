@@ -20,6 +20,10 @@ namespace zonetool::t7
 
 	zonetool_globals_t globals{};
 	std::vector<std::pair<XAssetType, std::string>> referenced_assets;
+
+	// The zone the current dump is loading. The fast file name the dump writes under can
+	// differ from it (-dumpas), and the end of the load is recognised by this one.
+	std::string dumping_zone;
 	std::unordered_set<XAssetType> asset_type_filter;
 	std::recursive_mutex dump_lock;
 
@@ -44,43 +48,37 @@ namespace zonetool::t7
 
 	std::unordered_set<std::pair<std::uint32_t, std::string>, pair_hash<std::uint32_t, std::string>> ignore_assets;
 
+	// A printable name of 1-255 characters. Reading through a bad pointer faults into the handler instead of
+	// asking the kernel about the page first: a VirtualQuery per call (several per asset, for every asset of
+	// every zone, BO3's own included) was most of the database thread's time while zones loaded.
+	bool printable_name(const char* name)
+	{
+		__try
+		{
+			for (auto i = 0; i < 256; i++)
+			{
+				const auto c = static_cast<unsigned char>(name[i]);
+				if (!c)
+				{
+					return i > 0;
+				}
+				if (c < 0x20 || c > 0x7E)
+				{
+					return false;
+				}
+			}
+			return false;
+		}
+		__except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION || GetExceptionCode() == STATUS_GUARD_PAGE_VIOLATION
+			? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+		{
+			return false;
+		}
+	}
+
 	const char* safe_asset_name(const char* name)
 	{
-		if (!name)
-		{
-			return "";
-		}
-
-		MEMORY_BASIC_INFORMATION mbi{};
-		if (!VirtualQuery(name, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT)
-		{
-			return "";
-		}
-
-		constexpr auto readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
-			PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-
-		if ((mbi.Protect & readable) == 0 || (mbi.Protect & PAGE_GUARD) != 0)
-		{
-			return "";
-		}
-
-		const auto* end = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
-		for (const auto* it = name; it < end && (it - name) < 256; it++)
-		{
-			const auto c = static_cast<unsigned char>(*it);
-			if (!c)
-			{
-				return it > name ? name : "";
-			}
-
-			if (c < 0x20 || c > 0x7E)
-			{
-				return "";
-			}
-		}
-
-		return "";
+		return name && printable_name(name) ? name : "";
 	}
 
 	const char* get_asset_name(XAssetType type, void* pointer)
@@ -249,6 +247,12 @@ namespace zonetool::t7
 
 		try
 		{
+			// map assets depend on each other and are converted once the zone has loaded
+			if (converter::iw7::map::remember(asset->type, asset->header.data))
+			{
+				return;
+			}
+
 			DUMP_ASSET_CONVERT(ASSET_TYPE_XANIMPARTS, xanim, XAnimParts);
 			DUMP_ASSET_CONVERT(ASSET_TYPE_XMODEL, xmodel, XModel);
 			DUMP_ASSET_CONVERT(ASSET_TYPE_XMODELMESH, xmodel_mesh, XModelMesh);
@@ -375,8 +379,17 @@ namespace zonetool::t7
 			const auto asset_name = &asset.second[1];
 
 			dump_trace("ref-lookup", asset_name);
-			const auto* entry = DB_FindXAssetEntry(asset.first, asset_name, false);
-			const auto asset_header = entry ? entry->asset.header : XAssetHeader{};
+			XAssetHeader asset_header{};
+			if (asset.first == ASSET_TYPE_IMAGE)
+			{
+				// images never reach the pool (db_add_xasset_stub keeps its own copies)
+				asset_header.image = converter::iw7::gfximage::find_image(asset_name);
+			}
+			else
+			{
+				const auto* entry = DB_FindXAssetEntry(asset.first, asset_name, false);
+				asset_header = entry ? entry->asset.header : XAssetHeader{};
+			}
 
 			if (!asset_header.data)
 			{
@@ -399,6 +412,9 @@ namespace zonetool::t7
 		referenced_assets.clear();
 	}
 
+	// the zone brought map assets to convert (converter::iw7::map::remember); finish_dump converts them
+	bool map_conversion_pending = false;
+
 	void stop_dumping()
 	{
 		std::lock_guard<std::recursive_mutex> lock(dump_lock);
@@ -420,13 +436,50 @@ namespace zonetool::t7
 
 		dump_refs();
 
-		ZONETOOL_INFO("Zone \"%s\" dumped.", filesystem::get_fastfile().data());
+		if (globals.target_game == game::iw7)
+		{
+			// DB_LoadXFile reads the delay-loaded blocks right before DB_FinishLoadXFile
+			dump_trace("phase", "images");
+			converter::iw7::gfximage::flush_dumps();
+
+			// the map assets wait for the end of the load (finish_dump)
+			map_conversion_pending = true;
+		}
 
 		globals.dump = false;
+	}
+
+	// Once the dumped zone has finished loading. BO3 applies the asset overrides it queued while loading a zone in
+	// DB_PostLoadXZone (0x1401D8E50), which otherwise only runs when the next zone starts loading: until then an asset of
+	// the zone that an earlier zone referenced is the placeholder copy of its type's default that the reference made, and
+	// the zone's own pointers to it read that copy.
+	void finish_dump()
+	{
+		std::lock_guard<std::recursive_mutex> lock(dump_lock);
+
+		if (map_conversion_pending)
+		{
+			map_conversion_pending = false;
+			wait_for_database();
+			utils::hook::invoke<void>(0x1401D8E50, 0); // DB_PostLoadXZone
+
+			dump_trace("phase", "map assets");
+			try
+			{
+				converter::iw7::map::convert_pending();
+			}
+			catch (const std::exception& e)
+			{
+				ZONETOOL_FATAL("A fatal exception occured while converting the map assets of zone \"%s\", exception was: \n%s",
+					filesystem::get_fastfile().data(), e.what());
+			}
+		}
+
+		ZONETOOL_INFO("Zone \"%s\" dumped.", filesystem::get_fastfile().data());
 
 		dump_trace("phase", "clearing xpak cache");
 		xpak::clear_cache();
-	
+
 		zonetool::taskbar::clear();
 	}
 
@@ -439,17 +492,42 @@ namespace zonetool::t7
 			header
 		};
 
+		if (type == ASSET_TYPE_IMAGE)
+		{
+			// Images must not go through the game's own add (it crashes the load), and every
+			// one of them is loaded into the same temporary block. Hand the loader a copy we
+			// own instead, so each material texture slot keeps pointing at its own image. The
+			// copy is also what gets dumped: the header itself is gone by the time the zone's
+			// delayed pixel data has been read.
+			XAssetHeader image{};
+			image.image = converter::iw7::gfximage::register_image(header.image);
+			if (header.image && header.image->name && header.image->name[0] != ',')
+			{
+				xasset.header = image;
+			}
+			dump_asset(&xasset);
+			return image;
+		}
+
 		dump_asset(&xasset);
 
 		const auto* name = get_asset_name(&xasset);
 		if (name[0] == ',')
 		{
 			const auto* entry = DB_FindXAssetEntry(type, name + 1, false);
-			return entry ? entry->asset.header : header;
-		}
+			if (entry)
+			{
+				return entry->asset.header;
+			}
 
-		if (type == ASSET_TYPE_IMAGE)
-		{
+			// A reference to an asset that is not loaded: BO3's own add (0x1401D7960 -> 0x1401D4E20) links it to an
+			// unloaded placeholder, a copy of the type's default asset, which the real asset replaces if its zone
+			// loads later. An unresolved reference stub faults in DB_FreeUnusedResources (0x1401D6650 -> Mark_XAsset).
+			const auto* default_entry = DB_FindDefaultXAssetEntry(type);
+			if (default_entry && default_entry->asset.header.data)
+			{
+				return db_add_xasset_hook.invoke<XAssetHeader>(type, header);
+			}
 			return header;
 		}
 
@@ -460,7 +538,7 @@ namespace zonetool::t7
 	void db_finish_load_x_file_stub(void* a1, void* a2)
 	{
 		const auto ff_name = *reinterpret_cast<const char**>(0x1468FD4A8);
-		if (ff_name == filesystem::get_fastfile())
+		if (ff_name && ff_name == dumping_zone)
 		{
 			stop_dumping();
 		}
@@ -485,6 +563,35 @@ namespace zonetool::t7
 		reallocate_asset_pool(type, multiplier * new_size);
 	}*/
 
+	// The alloc flags BO3 gives a zone of its core or mode zone tables (40-byte XZoneInfo records, read by 0x1401DBD90:
+	// core_ui 0x8, core_mod 0x40, zm_patch 0x10000080, zm_common 0x80, zm_mod 0x100, zm_levelcommon 0x200, ...); 0x10000
+	// for any other zone (a map). A map's own patch and localized zones load with its alloc flags and free flags derived
+	// from them, which unload every zone sharing 0x10000: the common zones need their own flags to stay loaded.
+	// the zones load_zone loaded, for unload_zones
+	std::unordered_set<std::string> loaded_zones;
+
+	std::uint32_t zone_alloc_flags(const std::string& name)
+	{
+		struct zone_table
+		{
+			std::uintptr_t address;
+			std::size_t count;
+		};
+		static constexpr zone_table tables[] = { { 0x1410C22C0, 10 }, { 0x1410C2450, 4 }, { 0x1410C24F0, 5 }, { 0x1410C25C0, 4 } };
+		for (const auto& table : tables)
+		{
+			for (auto i = 0u; i < table.count; i++)
+			{
+				const auto* entry = reinterpret_cast<const XZoneInfo*>(table.address + i * 40);
+				if (entry->name && !_stricmp(entry->name, name.data()))
+				{
+					return entry->allocFlags;
+				}
+			}
+		}
+		return 0x10000;
+	}
+
 	bool load_zone(const std::string& name, bool sync = false, bool inform = true)
 	{
 		if (!zone_exists(name.data()))
@@ -506,12 +613,14 @@ namespace zonetool::t7
 			ZONETOOL_INFO("Loading zone \"%s\"...", name.data());
 		}
 
+		// DB_LoadXAssets (0x1401D8740) replaces free flags without 0x40000000 by ones derived from the alloc flags (alloc
+		// bit b frees every loaded zone with a bit >= b of the same group: 0xFFF, 0x1F000 or 0x3FE0000) and unloads the
+		// loaded zones that have them first. 0x40000000 keeps the free flags as given: nothing is unloaded.
 		XZoneInfo zone{};
 		zone.name = name.data();
-		zone.allocFlags = 0x10000;
-		zone.freeFlags = 0;
-		zone.allocSlot = 0;
-		zone.freeSlot = 0;
+		zone.allocFlags = zone_alloc_flags(name);
+		zone.freeFlags = 0x40000000;
+		loaded_zones.insert(name);
 
 		zonetool::taskbar::set_indeterminate();
 
@@ -537,7 +646,8 @@ namespace zonetool::t7
 
 		while (index > 0)
 		{
-			if ((g_zones[index].flags & 0x10000) != 0)
+			// the maps (0x10000) and the zones load_zone gave BO3's own flags
+			if ((g_zones[index].flags & 0x10000) != 0 || loaded_zones.contains(zone_name->name))
 			{
 				DB_UnloadXZone(zone->index, 0, 0);
 			}
@@ -546,7 +656,8 @@ namespace zonetool::t7
 			zone--;
 			zone_name--;
 		}
-		
+		loaded_zones.clear();
+
 		ZONETOOL_INFO("Unloaded loaded zones...");
 	}
 
@@ -572,6 +683,7 @@ namespace zonetool::t7
 			filesystem::set_fastfile(name);
 		}
 
+		dumping_zone = name;
 		globals.dump = true;
 		globals.dump_csv = true;
 		if (!load_zone(name, false, false))
@@ -585,6 +697,7 @@ namespace zonetool::t7
 		{
 			Sleep(1);
 		}
+		finish_dump();
 	}
 
 	void dump_csv(const std::string& name)
@@ -994,6 +1107,8 @@ namespace zonetool::t7
 		auto args = get_command_line_arguments();
 		if (args.size() > 1)
 		{
+			std::optional<std::string> dump_as;
+
 			for (std::size_t i = 0; i < args.size(); i++)
 			{
 				if (i < args.size() - 1 && i + 1 < args.size())
@@ -1006,6 +1121,12 @@ namespace zonetool::t7
 					else if (args[i] == "-verifyzone")
 					{
 						verify_zone(args[i + 1]);
+						i++;
+					}
+					else if (args[i] == "-dumpas")
+					{
+						// write the next dump to dump/<name>/ instead of dump/<zone>/
+						dump_as = args[i + 1];
 						i++;
 					}
 					else if (args[i] == "-dumpzone")
@@ -1023,8 +1144,28 @@ namespace zonetool::t7
 							}
 						}
 
-						dump_zone(args[zone_index], target);
-						i = zone_index;
+						// optional asset type filter after the zone, as in the console command:
+						// -dumpzone iw7 <zone> com_map,gfx_map
+						asset_type_filter.clear();
+						auto last = zone_index;
+						if (zone_index + 1 < args.size() && !args[zone_index + 1].starts_with("-"))
+						{
+							last = zone_index + 1;
+							for (const auto& type_str : utils::string::split(args[last], ','))
+							{
+								const auto type = type_to_int(type_str);
+								if (type == -1)
+								{
+									ZONETOOL_ERROR("Asset type \"%s\" does not exist", type_str.data());
+									continue;
+								}
+
+								asset_type_filter.insert(static_cast<XAssetType>(type));
+							}
+						}
+
+						dump_zone(args[zone_index], target, dump_as);
+						i = last;
 					}
 				}
 			}
@@ -1094,6 +1235,16 @@ namespace zonetool::t7
 		atexit(on_exit);
 
 		utils::hook::nop(0x1401D87AE, 5); // nop original "loadzone" command
+
+		// BO3's asset copy (0x1401D91A0: an override, or the placeholder copy of a type's default for a reference to an
+		// asset that is not loaded, 0x1401D4E20 with flags 17) releases the Direct3D objects of the technique set or
+		// compute shader set it writes over and adds references to the ones it copies. This process has no renderer,
+		// and a placeholder lands in a recycled pool slot whose stale technique pointers reach freed memory. The
+		// reference counting is skipped.
+		utils::hook::set<std::uint8_t>(0x14038EFC0, 0xC3); // technique set: release
+		utils::hook::set<std::uint8_t>(0x14038EE60, 0xC3); // technique set: add references
+		utils::hook::set<std::uint8_t>(0x14038EAD0, 0xC3); // compute shader set: release
+		utils::hook::set<std::uint8_t>(0x14038EA60, 0xC3); // compute shader set: add references
 
 		//utils::hook::nop(0x1401DBB51, 13);
 		//utils::hook::jump(0x1401DBB51, utils::hook::assemble(skip_extra_zones_stub), true);

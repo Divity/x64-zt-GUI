@@ -72,6 +72,8 @@ namespace zonetool::t7
 			};
 
 			std::unordered_map<std::string, std::unordered_map<uint64_t, PackageCacheObject>> xpak_cache_map;
+			// the map is filled once, before the first read; material bakes read it from several threads
+			std::mutex xpak_cache_mutex;
 
 			namespace
 			{
@@ -145,7 +147,9 @@ namespace zonetool::t7
 						}
 						default:
 						{
-							return {};
+							// Blocks carrying any other command are not part of the payload and are
+							// skipped, as Greyhound's XPAKCache does (BO3 paks use 0xCF here).
+							break;
 						}
 						}
 
@@ -265,11 +269,12 @@ namespace zonetool::t7
 
 			std::vector<std::uint8_t> get_data(uint64_t key, const unsigned int expected_size)
 			{
-				for (auto& map : xpak_cache_map)
+				for (const auto& map : xpak_cache_map)
 				{
-					if (map.second.contains(key))
+					const auto found = map.second.find(key);
+					if (found != map.second.end())
 					{
-						auto obj = map.second[key];
+						const auto& obj = found->second;
 						filesystem::file file(obj.PackageFile);
 						file.open("rb", false, false);
 
@@ -313,12 +318,15 @@ namespace zonetool::t7
 				clear_cache();
 			}*/
 
-			if (xpak::xpak_cache_map.empty())
 			{
-				xpak::populate_xpak_cache_iterator("../zone/");
-				xpak::populate_xpak_cache_iterator("zone/");
+				std::lock_guard _(xpak::xpak_cache_mutex);
+				if (xpak::xpak_cache_map.empty())
+				{
+					xpak::populate_xpak_cache_iterator("../zone/");
+					xpak::populate_xpak_cache_iterator("zone/");
 
-				//xpak::populate_xpak_cache_for_loaded_zones();
+					//xpak::populate_xpak_cache_for_loaded_zones();
+				}
 			}
 
 			auto data = xpak::get_data(key, expected_size);
@@ -328,6 +336,7 @@ namespace zonetool::t7
 
 		void clear_cache()
 		{
+			std::lock_guard _(xpak::xpak_cache_mutex);
 			xpak::xpak_cache_map.clear();
 		}
 	}

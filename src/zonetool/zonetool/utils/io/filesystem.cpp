@@ -208,7 +208,11 @@ namespace zonetool
 		{
 			if (this->fp)
 			{
-				return fclose(this->fp);
+				// callers close and then destroy the file: a second fclose of the pointer would close whatever
+				// stream the CRT gave that slot to meanwhile, another thread's open file
+				const auto result = fclose(this->fp);
+				this->fp = nullptr;
+				return result;
 			}
 			return -1;
 		}

@@ -93,9 +93,17 @@ namespace zonetool::iw7
 		asset->physicsAsset = read.read_asset<PhysicsAsset>();
 		asset->physicsFXShape = read.read_asset<PhysicsFXShape>();
 
-		//
 		if (const auto* no_model_physics = std::getenv("ZT_NO_MODEL_PHYSICS");
 			no_model_physics && no_model_physics[0] == '1')
+		{
+			asset->physicsAsset = nullptr;
+		}
+
+		// ZT_STOCK_MODEL_NO_PHYSICS=1: models read from the stock dumps drop their non-ragdoll PhysicsAsset
+		if (const auto* stock_no_physics = std::getenv("ZT_STOCK_MODEL_NO_PHYSICS");
+			stock_no_physics && stock_no_physics[0] == '1' && asset->physicsAsset && asset->physicsAsset->name
+			&& !std::string(asset->physicsAsset->name).starts_with("ragdoll_")
+			&& filesystem::get_file_path(path).starts_with("dump\\"))
 		{
 			asset->physicsAsset = nullptr;
 		}

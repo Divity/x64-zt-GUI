@@ -13,6 +13,8 @@ namespace zonetool::t7
 	WEAK::t7::game::symbol<bool(const char* zone, char unk)> DB_FileExists{ 0x1401D5C20 };
 	WEAK::t7::game::symbol<XAssetHeader(XAssetType type, const char* name, bool errorIfMissing, int waitTime)> DB_FindXAssetHeader{ 0x1401D5FB0 };
 	WEAK::t7::game::symbol<XAssetEntry* (XAssetType type, const char* name, bool includeUnloaded)> DB_FindXAssetEntry{ 0x1401D5EE0 };
+	// the entry of the type's default asset (its name from the table at 0x1410C1BF0), or null
+	WEAK::t7::game::symbol<XAssetEntry* (XAssetType type)> DB_FindDefaultXAssetEntry{ 0x1401D5CD0 };
 
 	WEAK::t7::game::symbol<void(XZoneInfo* zoneInfo, uint zoneCount, qboolean sync, qboolean suppressSync)> DB_LoadXAssets{ 0x1401D8740 };
 	WEAK::t7::game::symbol<void(unsigned int zoneIndex, bool createDefault, qboolean suppressSync)> DB_UnloadXZone{ 0x1401DAC50 };

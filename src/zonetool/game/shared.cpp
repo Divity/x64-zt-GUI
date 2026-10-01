@@ -104,7 +104,8 @@ namespace zonetool
 
 	const char* strip_template(const std::string& function_name)
 	{
-		static char new_string[0x2000] = {0};
+		// per thread: material bakes log from several threads at once
+		static thread_local char new_string[0x2000] = {0};
 		std::memset(new_string, 0, sizeof(new_string));
 
 		for (auto i = 0; i < function_name.size(); i++)
