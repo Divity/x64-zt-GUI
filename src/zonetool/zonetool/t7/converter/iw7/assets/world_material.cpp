@@ -61,7 +61,22 @@ namespace zonetool::t7
 
 				std::unordered_map<const Material*, info> infos;
 				std::unordered_map<const Material*, info> model_infos;
+				std::unordered_map<const Material*, uv_bounds> world_usage;
+				std::vector<const Material*> world_atlas_order; // plan_world_atlases
 				std::map<unsigned char, unsigned char> decal_key_for_layer;
+
+				// BO3's global_invisible materials (shadow-only geometry): a level's copies (global_invisible1, ...) keep a lit techset,
+				// which would draw their placeholder texture
+				bool global_invisible(const Material* material)
+				{
+					if (!material || !material->name)
+					{
+						return false;
+					}
+					const std::string name = material->name;
+					const auto slash = name.find_last_of("/\\");
+					return name.compare(slash == std::string::npos ? 0 : slash + 1, 16, "global_invisible") == 0;
+				}
 
 				unsigned int techset_flags(const Material* material)
 				{
@@ -144,12 +159,16 @@ namespace zonetool::t7
 				{
 					info result{};
 					result.name = material->name;
+					if (const auto found = world_usage.find(material); found != world_usage.end())
+					{
+						result.used_uv = found->second;
+					}
 					result.casts_shadow = (material->info.gameFlags & t7_game_flag_casts_shadow) != 0;
 
 					const auto bucket = static_cast<unsigned char>(material->cameraRegion);
 					const auto flags = techset_flags(material);
 
-					if (bucket == t7_bucket_not_drawn)
+					if (bucket == t7_bucket_not_drawn || global_invisible(material))
 					{
 						result.cls = surface_class::shadow_only;
 						result.sort_key = iw7_sort_opaque;
@@ -195,7 +214,7 @@ namespace zonetool::t7
 					// BO3's water (its lit technique draws the refracted scene itself, some from the opaque bucket): IW7's
 					// refractive water, which reads the scene drawn before it, a transparent-region techset
 					const auto bo3 = bake::bo3_template(material);
-					if (bo3.starts_with("lit_water_sim_flow") || bo3.starts_with("water_shore_flow"))
+					if (bo3.starts_with("lit_water_sim_flow") || bo3.starts_with("water_shore_flow") || bo3.starts_with("lit_transparent_water_flow"))
 					{
 						result.cls = surface_class::trans;
 						result.sort_key = iw7_sort_trans;
@@ -259,7 +278,7 @@ namespace zonetool::t7
 					const auto bucket = static_cast<unsigned char>(material->cameraRegion);
 					const auto flags = techset_flags(material);
 
-					if (bucket == t7_bucket_not_drawn)
+					if (bucket == t7_bucket_not_drawn || global_invisible(material))
 					{
 						result.cls = surface_class::shadow_only;
 						result.sort_key = iw7_sort_opaque;
@@ -302,7 +321,7 @@ namespace zonetool::t7
 					// BO3's water on a model: IW7's UV-animated lit water (bake plan water), opaque as stock
 					// water_lake_geneva_close_tsunami (sort key 2, camera region 0)
 					const auto bo3 = bake::bo3_template(material);
-					if (bo3.starts_with("lit_water_sim_flow") || bo3.starts_with("water_shore_flow"))
+					if (bo3.starts_with("lit_water_sim_flow") || bo3.starts_with("water_shore_flow") || bo3.starts_with("lit_transparent_water_flow"))
 					{
 						result.cls = surface_class::opaque;
 						result.sort_key = iw7_sort_opaque;
@@ -390,20 +409,36 @@ namespace zonetool::t7
 				return probe::readable(ptr, size);
 			}
 
-			void prepare(const GfxWorld* world)
+			void set_world_usage(const Material* material, const uv_bounds& uv)
+			{
+				world_usage[material] = uv;
+			}
+
+			void prepare(const GfxWorld* world, const std::vector<const Material*>& world_props)
 			{
 				infos.clear();
+				world_usage.clear();
+				world_atlas_order.clear();
 				bake::clear();
 
+				// the decal layers of the world's surfaces, and of the models the GfxWorld draws (static_model_clusters world
+				// groups), which take the world's decal keys
 				std::map<unsigned char, unsigned int> surfaces_per_layer;
-				for (auto s = 0; s < world->surfaceCount; s++)
+				const auto count_layer = [&](const Material* material)
 				{
-					const auto* material = world->dpvs.surfaces[s].material;
 					const auto flags = techset_flags(material);
 					if ((flags & t7_techset_deferred) && (flags & t7_techset_decal))
 					{
 						surfaces_per_layer[material->info.layerSortDecal]++;
 					}
+				};
+				for (auto s = 0; s < world->surfaceCount; s++)
+				{
+					count_layer(world->dpvs.surfaces[s].material);
+				}
+				for (const auto* material : world_props)
+				{
+					count_layer(material);
 				}
 
 				assign_decal_keys(surfaces_per_layer);
@@ -431,6 +466,19 @@ namespace zonetool::t7
 				return model_infos.emplace(material, classify_model(material)).first->second;
 			}
 
+			std::tuple<unsigned char, unsigned char, std::string, std::string> model_draw_order(const Material* material)
+			{
+				if (!material)
+				{
+					return {};
+				}
+				const auto found = model_infos.find(material);
+				const auto inf = found != model_infos.end() ? found->second : classify_model(material);
+				const auto* techset = readable(material->techniqueSet, sizeof(MaterialTechniqueSet)) && material->techniqueSet->name
+					? material->techniqueSet->name : "";
+				return { inf.camera_region, inf.sort_key, techset, inf.name };
+			}
+
 			bool model_blocks_sun(const Material* material)
 			{
 				if (!material || !(material->info.gameFlags & t7_game_flag_casts_shadow)
@@ -439,7 +487,7 @@ namespace zonetool::t7
 					return false;
 				}
 				const auto bucket = static_cast<unsigned char>(material->cameraRegion);
-				if (bucket == t7_bucket_not_drawn)
+				if (bucket == t7_bucket_not_drawn || global_invisible(material))
 				{
 					return true; // shadow-only geometry
 				}
@@ -454,6 +502,223 @@ namespace zonetool::t7
 				}
 				// (alpha tested ones too: the caller blocks the sun with them through their alpha, bake::alpha_mask_of)
 				return true;
+			}
+
+			std::map<std::string, std::vector<std::string>> atlas_report(const std::vector<const Material*>& materials,
+				const std::unordered_map<const Material*, surface_usage>& used)
+			{
+				std::vector<std::string> reasons(materials.size());
+				parallel_for(static_cast<std::uint32_t>(materials.size()), [&](const std::uint32_t i, std::uint32_t)
+				{
+					const auto found = used.find(materials[i]);
+					const auto inf = classify_model(materials[i], found != used.end() ? &found->second : nullptr);
+					std::uint32_t w, h;
+					auto alpha = false;
+					std::string why;
+					reasons[i] = bake::atlas_tile(materials[i], inf, w, h, alpha, &why) ? "atlased" : why;
+				});
+				std::map<std::string, std::vector<std::string>> out;
+				for (auto i = 0u; i < materials.size(); i++)
+				{
+					out[reasons[i]].push_back(materials[i]->name);
+				}
+				return out;
+			}
+
+			bool world_drawable(const Material* material)
+			{
+				if (!material || !readable(material->techniqueSet, sizeof(MaterialTechniqueSet)))
+				{
+					return false;
+				}
+				if (material->techniqueSet->name)
+				{
+					const auto* entry = zonetool::t7::DB_FindXAssetEntry(ASSET_TYPE_TECHNIQUE_SET, material->techniqueSet->name, true);
+					if (entry && entry->placeholder)
+					{
+						return false;
+					}
+				}
+				// BO3's placeholder ($default) and effect materials (the emissive fx bucket, _fx templates) stay on models
+				if (!material->name || std::strchr(material->name, '$'))
+				{
+					return false;
+				}
+				const auto bucket = static_cast<unsigned char>(material->cameraRegion);
+				if (bucket != t7_bucket_not_drawn && bucket != t7_bucket_lit_opaque && bucket != t7_bucket_lit_trans
+					&& bucket != t7_bucket_lit_post_resolve && !(techset_flags(material) & t7_techset_deferred))
+				{
+					return false;
+				}
+				const auto bo3 = bake::bo3_template(material);
+				// (BO3's additive decals have no stock world techset in the transparent region: decal_emissive)
+				return bo3 != "skin" && bo3 != "eye" && bo3.find("_fx") == std::string::npos && !bo3.starts_with("decal_emissive");
+			}
+
+			using atlas_key = std::tuple<std::uint32_t, std::uint32_t, bool, std::string, bool>;
+
+			std::optional<atlas_key> atlas_key_of(const Material* material, const info& inf)
+			{
+				std::uint32_t tw, th;
+				auto alpha = false;
+				if (!bake::atlas_tile(material, inf, tw, th, alpha))
+				{
+					return {};
+				}
+				// (not by techset or shadow casting: with iw7-mod's static model lists, 16 times IW7's, the atlas count, images IW7 holds
+				// at most 15616 of, matters more than an atlas being one material)
+				return atlas_key{ tw, th, alpha, std::string(), false };
+			}
+
+			// the tiles an atlas side holds (up to 4096 texels, at most 16)
+			std::uint32_t atlas_side(const std::uint32_t size)
+			{
+				auto n = 1u;
+				while (n < 16 && size * n * 2 <= 4096)
+				{
+					n *= 2;
+				}
+				return n;
+			}
+
+			// atlases of `materials` (those bake::atlas_tile takes), named prefix_<n>: their texture areas in `table` move to their
+			// tiles. Returns the members, each atlas's together (an atlas is written once its last tile is baked)
+			std::vector<const Material*> plan_atlases(const std::vector<const Material*>& materials,
+				std::unordered_map<const Material*, info>& table, const char* prefix, const char* kind)
+			{
+				// atlases (bake::atlas_tile), of the materials classified here: a model written before took its material's
+				// texture coordinates already. Same-size tiles, up to 4096 texels an atlas side (2 x 2 tiles of 2048: a 22 MB streamed part), a power of
+				// two up to 16 tiles a side (IW7 loads at most 15616 images: a large map's small props need the larger grids)
+				// alpha-tested materials in atlases of their own (with a coverage layer)
+				std::map<atlas_key, std::vector<const Material*>> by_tile;
+				for (auto i = 0u; i < materials.size(); i++)
+				{
+					if (const auto key = atlas_key_of(materials[i], table.at(materials[i])))
+					{
+						by_tile[*key].push_back(materials[i]);
+					}
+				}
+				std::vector<const Material*> atlas_order;
+				auto atlas_count = 0u;
+				for (const auto& [tile, members] : by_tile)
+				{
+					const auto side = atlas_side;
+					const auto& [tile_width, tile_height, tile_alpha, tile_techset, tile_casts] = tile;
+					const auto max_columns = side(tile_width);
+					const auto max_rows = side(tile_height);
+					for (std::size_t first = 0; first < members.size(); first += static_cast<std::size_t>(max_columns) * max_rows)
+					{
+						const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(members.size() - first,
+							static_cast<std::size_t>(max_columns) * max_rows));
+						if (count < 2)
+						{
+							break;
+						}
+						auto columns = max_columns;
+						auto rows = max_rows;
+						while (rows > 1 && columns * rows / 2 >= count)
+						{
+							rows /= 2;
+						}
+						while (columns > 1 && columns * rows / 2 >= count)
+						{
+							columns /= 2;
+						}
+						bake::atlas_slot slot{};
+						slot.cs = utils::string::va("%s_%u_packed_cs", prefix, atlas_count);
+						slot.ng = utils::string::va("%s_%u_packed_ng", prefix, atlas_count);
+						if (tile_alpha)
+						{
+							slot.a = utils::string::va("%s_%u_packed_a", prefix, atlas_count);
+						}
+						slot.columns = columns;
+						slot.rows = rows;
+						slot.tile_width = tile_width;
+						slot.tile_height = tile_height;
+						atlas_count++;
+						for (auto k = 0u; k < count; k++)
+						{
+							const auto* material = members[first + k];
+							slot.column = k % columns;
+							slot.row = k / columns;
+							auto& inf = table.at(material);
+							// tile texture coordinates t = (uv - origin) / span in [0, 1] -> (place + t) / n
+							const std::uint32_t place[2] = { slot.column, slot.row };
+							const std::uint32_t n[2] = { columns, rows };
+							for (auto axis = 0; axis < 2; axis++)
+							{
+								const auto span = inf.uv_span[axis];
+								auto origin = inf.uv_origin[axis] - static_cast<float>(place[axis]) * span;
+								const auto atlas_span = static_cast<float>(n[axis]) * span;
+								if (2 * place[axis] >= n[axis] && n[axis] > 1)
+								{
+									origin += atlas_span;
+								}
+								inf.uv_origin[axis] = origin;
+								inf.uv_span[axis] = atlas_span;
+							}
+							bake::set_atlas(material, inf, slot);
+							atlas_order.push_back(material);
+						}
+					}
+				}
+				std::string tile_sizes;
+				for (const auto& [tile, members] : by_tile)
+				{
+					tile_sizes += utils::string::va(" %ux%u%s:%zu", std::get<0>(tile), std::get<1>(tile), std::get<2>(tile) ? "a" : "", members.size());
+				}
+				ZONETOOL_INFO("%s: %zu share %u atlases (%zu images fewer); tiles%s", kind, atlas_order.size(), atlas_count,
+					(atlas_order.size() - atlas_count) * 2, tile_sizes.data());
+				return atlas_order;
+
+			}
+
+			std::unordered_map<const Material*, unsigned int> atlas_groups(const std::vector<const Material*>& materials,
+				const std::unordered_map<const Material*, surface_usage>& used)
+			{
+				std::vector<std::optional<atlas_key>> keys(materials.size());
+				parallel_for(static_cast<std::uint32_t>(materials.size()), [&](const std::uint32_t i, std::uint32_t)
+				{
+					const auto found = used.find(materials[i]);
+					keys[i] = atlas_key_of(materials[i], classify_model(materials[i], found != used.end() ? &found->second : nullptr));
+				});
+				std::map<atlas_key, std::vector<const Material*>> by_tile;
+				for (auto i = 0u; i < materials.size(); i++)
+				{
+					if (keys[i])
+					{
+						by_tile[*keys[i]].push_back(materials[i]);
+					}
+				}
+				std::unordered_map<const Material*, unsigned int> out;
+				auto group = 0u;
+				for (const auto& [key, members] : by_tile)
+				{
+					const auto per = static_cast<std::size_t>(atlas_side(std::get<0>(key))) * atlas_side(std::get<1>(key));
+					for (std::size_t first = 0; first < members.size(); first += per)
+					{
+						const auto end = std::min(members.size(), first + per);
+						if (end - first < 2)
+						{
+							break;
+						}
+						for (auto k = first; k < end; k++)
+						{
+							out[members[k]] = group;
+						}
+						group++;
+					}
+				}
+				return out;
+			}
+
+			void plan_world_atlases(const std::vector<const Material*>& materials)
+			{
+				for (const auto* material : materials)
+				{
+					get(material);
+				}
+				world_atlas_order = plan_atlases(materials, infos, "t7_watlas", "world materials of placed models");
 			}
 
 			void dump_all(const GfxWorld* world)
@@ -476,18 +741,47 @@ namespace zonetool::t7
 				{
 					add(world->materialMemory[i].material);
 				}
+				// and the models' materials the GfxWorld draws on world surfaces (static_model_clusters world groups), by name
+				{
+					std::vector<const Material*> props;
+					for (const auto& [material, inf] : infos)
+					{
+						if (!seen.contains(material))
+						{
+							props.push_back(material);
+						}
+					}
+					std::ranges::sort(props, [](const Material* a, const Material* b)
+					{
+						return std::strcmp(a->name, b->name) < 0;
+					});
+					for (const auto* material : props)
+					{
+						add(material);
+					}
+				}
 
 				bake::set_underlying_gloss(bake::estimate_underlying_gloss(materials));
 
-				// classified here, one after another: the workers only read the table
+				// classified here, one after another: the workers only read the table; the atlas members last, each atlas's
+				// together (plan_world_atlases)
 				std::vector<std::pair<const Material*, info>> jobs;
+				const std::unordered_set<const Material*> in_atlas(world_atlas_order.begin(), world_atlas_order.end());
 				for (const auto* material : materials)
+				{
+					if (!in_atlas.contains(material))
+					{
+						jobs.emplace_back(material, get(material));
+					}
+				}
+				for (const auto* material : world_atlas_order)
 				{
 					jobs.emplace_back(material, get(material));
 				}
 
 				const auto start = std::chrono::steady_clock::now();
 				const auto result = bake_all(jobs, "world");
+				bake::flush_atlases();
 				const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 				ZONETOOL_INFO("world materials: converted %u of %zu (%.1f MB of images, %.0f s; %s)", result.converted, materials.size(),
 					static_cast<double>(bake::image_bytes()) / (1024.0 * 1024.0), seconds, bake::stage_report().data());
@@ -520,87 +814,15 @@ namespace zonetool::t7
 					model_infos.emplace(materials[i], std::move(classified[i]));
 				}
 
-				// atlases (bake::atlas_tile), of the materials classified here: a model written before took its material's
-				// texture coordinates already. Same-size tiles, up to 4096 texels an atlas side (2 x 2 tiles of 2048: a 22 MB streamed part), 1, 2 or 4 tiles a side (a
-				// tile edge then falls on 0.5, where the texture coordinates move by a whole atlas to keep them near 0)
-				std::map<std::pair<std::uint32_t, std::uint32_t>, std::vector<const Material*>> by_tile;
+				std::vector<const Material*> candidates;
 				for (auto i = 0u; i < materials.size(); i++)
 				{
-					std::uint32_t tw, th;
-					if (fresh[i] && bake::atlas_tile(materials[i], model_infos.at(materials[i]), tw, th))
+					if (fresh[i])
 					{
-						by_tile[{ tw, th }].push_back(materials[i]);
+						candidates.push_back(materials[i]);
 					}
 				}
-				std::vector<const Material*> atlas_order;
-				auto atlas_count = 0u;
-				for (const auto& [tile, members] : by_tile)
-				{
-					const auto side = [](const std::uint32_t size)
-					{
-						auto n = 1u;
-						while (n < 4 && size * n * 2 <= 4096)
-						{
-							n *= 2;
-						}
-						return n;
-					};
-					const auto max_columns = side(tile.first);
-					const auto max_rows = side(tile.second);
-					for (std::size_t first = 0; first < members.size(); first += static_cast<std::size_t>(max_columns) * max_rows)
-					{
-						const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(members.size() - first,
-							static_cast<std::size_t>(max_columns) * max_rows));
-						if (count < 2)
-						{
-							break;
-						}
-						auto columns = max_columns;
-						auto rows = max_rows;
-						while (rows > 1 && columns * rows / 2 >= count)
-						{
-							rows /= 2;
-						}
-						while (columns > 1 && columns * rows / 2 >= count)
-						{
-							columns /= 2;
-						}
-						bake::atlas_slot slot{};
-						slot.cs = utils::string::va("t7_atlas_%u_packed_cs", atlas_count);
-						slot.ng = utils::string::va("t7_atlas_%u_packed_ng", atlas_count);
-						slot.columns = columns;
-						slot.rows = rows;
-						slot.tile_width = tile.first;
-						slot.tile_height = tile.second;
-						atlas_count++;
-						for (auto k = 0u; k < count; k++)
-						{
-							const auto* material = members[first + k];
-							slot.column = k % columns;
-							slot.row = k / columns;
-							auto& inf = model_infos.at(material);
-							// tile texture coordinates t = (uv - origin) / span in [0, 1] -> (place + t) / n
-							const std::uint32_t place[2] = { slot.column, slot.row };
-							const std::uint32_t n[2] = { columns, rows };
-							for (auto axis = 0; axis < 2; axis++)
-							{
-								const auto span = inf.uv_span[axis];
-								auto origin = inf.uv_origin[axis] - static_cast<float>(place[axis]) * span;
-								const auto atlas_span = static_cast<float>(n[axis]) * span;
-								if (2 * place[axis] >= n[axis] && n[axis] > 1)
-								{
-									origin += atlas_span;
-								}
-								inf.uv_origin[axis] = origin;
-								inf.uv_span[axis] = atlas_span;
-							}
-							bake::set_atlas(material, inf, slot);
-							atlas_order.push_back(material);
-						}
-					}
-				}
-				ZONETOOL_INFO("model materials: %zu share %u atlases (%zu images fewer)", atlas_order.size(), atlas_count,
-					(atlas_order.size() - atlas_count) * 2);
+				const auto atlas_order = plan_atlases(candidates, model_infos, "t7_atlas", "model materials");
 
 				// the atlas members last, each atlas's together (an atlas is written once its last tile is baked)
 				std::unordered_set<const Material*> in_atlas(atlas_order.begin(), atlas_order.end());
@@ -636,6 +858,7 @@ namespace zonetool::t7
 				const auto bytes_before = bake::image_bytes();
 				const auto result = bake_all(jobs, "model");
 				bake::flush_atlases();
+				bake::share_atlas_materials();
 				const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 				ZONETOOL_INFO("model materials: converted %u of %zu (%.1f MB of images, %.0f s; %s)", result.converted, materials.size(),
 					static_cast<double>(bake::image_bytes() - bytes_before) / (1024.0 * 1024.0), seconds, bake::stage_report().data());

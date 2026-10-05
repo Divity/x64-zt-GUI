@@ -19,11 +19,12 @@
 //   forward vector of the lighting state's sun angles (GfxGlobalLightSettings pitch, yaw; BO3 keeps -f); z = the
 //   skybox size, negative flipping z; w = dvar 0x57DE83E6 (default 0), a blend with the panorama flipped upside down.
 // * the vertex shader turns the view direction d: t = (d.x cos a - d.y sin a, d.x sin a + d.y cos a, d.z); the pixel
-//   shader samples the panorama at u = 0.5 - atan2(t.y, t.x) / 2 pi, v = acos(t.z) / pi and outputs it unscaled.
+//   shader samples the panorama at u = 0.5 - atan2(t.y, t.x) / 2 pi, v = acos(t.z) / pi; the main pass scales it by colour
+//   matrices (cb1[51..56]) and cb0[10].x, which light it as the sun does (sky_scale below).
 // IW7 (w_sky, stock data): the cube is sampled along the view direction through the code constants
 // SKY_ROTATION_MATRIX_INVERSE_R0..2 (identity unless a script turns the sky) and scaled by r_hdrSkyIntensity x
 // r_hdrSkyColorTint from the vision. Stock skies are BC6H cubes, colour map semantic, sampler state 243. BO3 exposes the
-// sky with the scene, so its texels take map::bo3_light_scale like every other BO3 radiance.
+// sky with the scene, so its texels take map::bo3_light_scale like every other BO3 radiance, on top of the sun's.
 
 namespace zonetool::t7
 {
@@ -147,18 +148,20 @@ namespace zonetool::t7
 			const auto start = std::chrono::steady_clock::now();
 
 			// the sky of the sun volumes a camera can be in (a volume without planes only takes what the others
-			// leave); they have to agree
+			// leave), the main volume's first (map::main_sun_volume); a map that swaps skies by script keeps it
 			const GfxSkyBox* box = nullptr;
 			const GfxGlobalLightSettings* sun = nullptr;
-			for (auto v = 0u; v < asset->sunVolumeCount; v++)
+			const auto main = map::main_sun_volume(asset);
+			for (auto k = 0u; k < asset->sunVolumeCount; k++)
 			{
+				const auto v = k == 0 ? main : (k <= main ? k - 1 : k);
 				const auto& volume = asset->sunVolumes[v];
 				const auto& candidate = volume.skyboxes[0];
 				if (!volume.planeCount || !candidate.image || !candidate.image->image)
 				{
 					continue;
 				}
-				const auto& settings = volume.sun.settings[0];
+				const auto& settings = volume.sun.settings[map::lighting_state()];
 				if (!box)
 				{
 					box = &candidate;
@@ -168,7 +171,7 @@ namespace zonetool::t7
 				if (candidate.image != box->image || candidate.rotation != box->rotation || candidate.size != box->size
 					|| settings.pitch != sun->pitch || settings.yaw != sun->yaw)
 				{
-					ZONETOOL_FATAL("sky: sun volume %u has another skybox or sun than the first (IW7 draws one sky)", v);
+					ZONETOOL_WARNING("sky: sun volume %u has another skybox or sun than the main one (map::main_sun_volume); IW7 draws one sky, the main volume's", v);
 				}
 			}
 			if (!box)
@@ -183,8 +186,58 @@ namespace zonetool::t7
 			const auto angle = box->rotation * deg2rad + std::atan2(-forward[1], -forward[0]);
 			const auto sin_a = std::sin(angle), cos_a = std::cos(angle);
 			const auto flip = box->size < 0.0f;
+			// BO3's sky pass (sky_latlong_hdr) brightens the panorama by the lighting state's sun, untinted: as bright as
+			// panorama x sun intensity x the luminance of its colour (zm_prototype: clouds 1.47 x 724 x 0.54 against moonlit snow
+			// ~250, 2.3x, as BO3 shows it, 2.21x; tinted by the moon's blue colour it came out bluer than BO3's grey sky, k92)
+			const auto sun_luminance = sun->intensity * (0.2126f * sun->color[0] + 0.7152f * sun->color[1] + 0.0722f * sun->color[2]);
+			const float sky_scale[3] = { sun_luminance, sun_luminance, sun_luminance };
 
+			if (box->model && box->model->meshMaterials)
+			{
+				const auto& mm = box->model->meshMaterials[0];
+				for (auto i = 0; i < mm.numMaterials; i++)
+				{
+					const auto* m = mm.materials[i];
+					if (!m)
+					{
+						continue;
+					}
+					ZONETOOL_INFO("sky: model %s material %s techset %s, %u constants", box->model->name, m->name,
+						m->techniqueSet ? m->techniqueSet->name : "?", static_cast<unsigned int>(m->constantCount));
+					for (auto k = 0; k < m->constantCount && m->constantTable; k++)
+					{
+						const auto& c = m->constantTable[k];
+						ZONETOOL_INFO("sky:   constant %.12s (0x%08X) %g %g %g %g", c.name, c.nameHash, c.literal[0], c.literal[1], c.literal[2], c.literal[3]);
+					}
+				}
+			}
 			const auto source = decode(*box->image);
+			{
+				// the panorama's brightness in BO3 units (upper half, by solid angle; the brightest 1%)
+				double sum = 0.0, weight = 0.0, zenith = 0.0, zenith_w = 0.0;
+				std::vector<float> lum;
+				for (auto y = 0u; y < source.height / 2; y++)
+				{
+					const auto w = std::sin((y + 0.5) / source.height * pi);
+					for (auto x = 0u; x < source.width; x += 4)
+					{
+						const auto* c = &source.rgb[(static_cast<std::size_t>(y) * source.width + x) * 3];
+						const auto l = 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
+						sum += l * w;
+						weight += w;
+						if (y < source.height / 8)
+						{
+							zenith += l * w;
+							zenith_w += w;
+						}
+						lum.push_back(l);
+					}
+				}
+				std::ranges::sort(lum);
+				ZONETOOL_INFO("sky: panorama luminance (BO3 units): upper half mean %g, top 45 degrees %g, 99th percentile %g, max %g",
+					sum / std::max(weight, 1e-9), zenith / std::max(zenith_w, 1e-9), lum.empty() ? 0.0f : lum[lum.size() * 99 / 100],
+					lum.empty() ? 0.0f : lum.back());
+			}
 			auto face = 1u;
 			while (face * 2 <= std::min(max_face, source.width / 4))
 			{
@@ -233,7 +286,7 @@ namespace zonetool::t7
 						}
 						for (auto c = 0; c < 3; c++)
 						{
-							row[x * 4 + c] = sum[c] * map::bo3_light_scale / static_cast<float>(supersample * supersample);
+							row[x * 4 + c] = sum[c] * sky_scale[c] * map::bo3_light_scale / static_cast<float>(supersample * supersample);
 						}
 						row[x * 4 + 3] = 1.0f;
 					}

@@ -20,6 +20,8 @@ namespace zonetool::t7
 			std::vector<float> visibility;      // per member: its probe lighting's luminance against the cluster's (0..1]
 			float mins[3]{};                    // world bounds of every member's first LOD
 			float maxs[3]{};
+			// per member its own world bounds (mins, maxs): the lights reaching the cluster are those reaching a member
+			std::vector<std::array<float, 6>> member_bounds;
 			bool casts_shadow = true;
 			// a posed static model (BO3 GfxStaticModelDrawInst posedBones: corpses) as one member with its pose baked in:
 			// per BO3 bone its model space skinning matrix (row-major 3x4)
@@ -27,6 +29,9 @@ namespace zonetool::t7
 			std::vector<std::array<float, 12>> skin;
 			// a LOD has more than IW7's 16 static model surfaces: placed as a script_model instead (gfxworld.cpp)
 			bool too_many_surfaces = false;
+			// its members' mean sun visibility (0..1, world_lightmap::sun_fraction at each centre), the light grid's for its sample;
+			// members are grouped lit (at least half) or not, as IW7 gives a static model one sun visibility past the cascades
+			float sun = -1.0f;
 		};
 
 		// IW7 lists a sun shadow cascade's static model casters per surface: 256 entries a draw type (iw7_ship 0x140DCC700
@@ -55,6 +60,14 @@ namespace zonetool::t7
 			std::vector<shadow_proxy> proxies;
 			std::vector<char> proxied;            // BO3 static model -> its shadow is a proxy's (it casts none itself)
 			unsigned int proxy_begin = 0;         // the IW7 static model index of the first proxy
+			std::vector<unsigned char> member_lod; // BO3 static model -> the LOD its cluster copies (plan_shadow_proxies)
+			// When no grouping keeps the static model lists within IW7's (a view's 8 KB surface list and 256 delayed surfaces,
+			// 0x140DCE680), the members whose materials all draw on world surfaces (world_material::world_drawable) are drawn
+			// by the GfxWorld instead: static world surfaces, one per material of each group, which IW7 lists as runs of
+			// consecutive surfaces (8 bytes a run, 0x140DC7A70, from a 950 KB frame arena). They are no IW7 static model
+			// (iw7_index ~0u); gfxworld.cpp places their member_lod geometry.
+			std::vector<cluster> world_clusters;
+			std::vector<int> world_of;            // BO3 static model -> its world group, or -1
 		};
 
 		// decides the clusters of the GfxWorld's static models (before its cells and static models are converted)
@@ -72,6 +85,21 @@ namespace zonetool::t7
 
 		// whether a model is placed only inside clusters (no row of its own needed)
 		bool only_clustered(const XModel* model);
+
+		// For the Umbra tome (gfxworld.cpp): an IW7 static model's members' world bounds (mins, maxs), and the opaque triangles it
+		// draws that cast the sun's shadow (world space, each member at the LOD the model draws it nearest: a cluster's member_lod,
+		// an unmerged model's first), which hide what is behind them. Nothing for a shadow proxy (never drawn).
+		void umbra_geometry(unsigned int iw7_index, std::vector<std::array<float, 6>>& member_bounds, std::vector<float>& vertices,
+			std::vector<std::uint32_t>& indices);
+
+		// IW7 lights a static model from its own light grid probes (GfxStaticModelDrawInst first probe, count; the last a fade
+		// probe), each vertex blending four of them (its surfaces' 0x300 simplex data, the lprobe lpi_lpw vertex shaders), as
+		// Spaceland's large models do (up to 64 + 1). A cluster's probes: world position and outward normal, spread over its
+		// surfaces; none for a posed cluster or another IW7 static model.
+		const std::vector<std::array<float, 6>>& light_probes(unsigned int iw7_index);
+		// a single static model's mesh vertex (model space position and normal) as its simplex record (8 bytes); false for a
+		// mesh without probes of its own
+		bool write_probe_simplex(const XModelMesh* mesh, const float p[3], const float n[3], unsigned char out[8]);
 
 		std::vector<std::string> model_names();
 		void clear();

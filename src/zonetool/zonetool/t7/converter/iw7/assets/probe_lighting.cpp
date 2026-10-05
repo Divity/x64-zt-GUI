@@ -615,6 +615,11 @@ namespace zonetool::t7
 					const auto& src_probe = array.configs[i];
 					if (src_probe.exploderDisabled[0])
 					{
+						if (std::getenv("ZT_LIGHT_TRACE"))
+						{
+							ZONETOOL_INFO("light trace: sun volume %u probe %u held by an exploder, origin %.1f %.1f %.1f", v, i,
+								src_probe.config.cullOrigin[0], src_probe.config.cullOrigin[1], src_probe.config.cullOrigin[2]);
+						}
 						continue;
 					}
 

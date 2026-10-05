@@ -3,6 +3,7 @@
 #include "clipmap.hpp"
 #include "xmodel_collision.hpp"
 #include "xmodel.hpp"
+#include "static_model_clusters.hpp"
 
 #include "zonetool/t7/converter/iw7/convex.hpp"
 #include "zonetool/t7/converter/iw7/map_common.hpp"
@@ -642,6 +643,8 @@ namespace zonetool::t7
 				std::unordered_map<const XModel*, std::vector<xmodel_collision::triangle>> model_tris;
 				std::vector<bool> baked_static_model(asset->numStaticModels, false);
 				auto baked_count = 0u;
+				std::vector<bool> dropped_static_model(asset->numStaticModels, false);
+				auto dropped_count = 0u;
 				{
 					unsigned long long bodies = 0, lod_shapes = 0;
 					for (auto i = 0u; i < asset->numStaticModels; i++)
@@ -651,6 +654,13 @@ namespace zonetool::t7
 						{
 							model_cost[model] = xmodel_collision::cost(model);
 							model_tris[model] = xmodel_collision::triangles(model);
+						}
+						// a model drawn only inside clusters has no XModel to name (x64-zt would stand in a physics-less default)
+						if (static_model_clusters::only_clustered(model))
+						{
+							dropped_static_model[i] = true;
+							dropped_count++;
+							continue;
 						}
 						bodies += model_cost[model].bodies;
 						lod_shapes += model_cost[model].lod_shapes;
@@ -669,6 +679,10 @@ namespace zonetool::t7
 						bodies = lod_shapes = 0;
 						for (const auto i : order)
 						{
+							if (dropped_static_model[i])
+							{
+								continue;
+							}
 							const auto& c = model_cost[asset->staticModelList[i].xmodel];
 							if (bodies + c.bodies <= static_model_physics_budget && lod_shapes + c.lod_shapes <= static_model_physics_budget)
 							{
@@ -1378,7 +1392,7 @@ namespace zonetool::t7
 
 				// runtime slots: 64 dynents for script-spawned scriptables
 				// and 500 scriptable instances (BO3's 500 dynents are empty runtime slots as well)
-				constexpr unsigned short reserved_dynents = 64;
+				constexpr auto reserved_dynents = map::reserved_dynents;
 				constexpr unsigned int runtime_scriptables = 500;
 				mapents->dynEntCount[0] = reserved_dynents;
 				mapents->dynEntCount[1] = 0;
@@ -1435,14 +1449,14 @@ namespace zonetool::t7
 
 				// the static models within the physics budget (the rest are in the world shape)
 				std::unordered_map<const XModel*, zonetool::iw7::XModel*> model_stubs;
-				const auto kept_static_models = asset->numStaticModels - baked_count;
+				const auto kept_static_models = asset->numStaticModels - baked_count - dropped_count;
 				clip->numStaticModels = kept_static_models;
 				clip->staticModelList = allocator.allocate_array<zonetool::iw7::cStaticModel_s>(kept_static_models);
 				clip->staticModelCollisionModelList.numModels = kept_static_models;
 				clip->staticModelCollisionModelList.staticModelIndex = allocator.allocate_array<int>(kept_static_models);
 				for (auto i = 0u, k = 0u; i < asset->numStaticModels; i++)
 				{
-					if (baked_static_model[i])
+					if (baked_static_model[i] || dropped_static_model[i])
 					{
 						continue;
 					}

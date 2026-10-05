@@ -11,6 +11,8 @@
 #include "map_entities.hpp"
 #include "assets/xmodel.hpp"
 #include "assets/xmodel_mesh.hpp"
+
+#include <utils/string.hpp>
 #include "assets/static_model_clusters.hpp"
 #include "parallel.hpp"
 
@@ -22,6 +24,42 @@ namespace zonetool::t7
 {
 	namespace converter::iw7::map
 	{
+		unsigned int lighting_state()
+		{
+			static const auto state = []
+			{
+				const auto* value = std::getenv("ZT_LIGHTING_STATE");
+				const auto n = value ? std::atoi(value) : 0;
+				return static_cast<unsigned int>(std::clamp(n, 0, 3));
+			}();
+			return state;
+		}
+
+		unsigned int main_sun_volume(const GfxWorld* world)
+		{
+			auto best = 0u;
+			auto best_probes = -1ll;
+			for (auto v = 0u; world && v < world->sunVolumeCount; v++)
+			{
+				const auto& volume = world->sunVolumes[v];
+				if (!volume.planeCount)
+				{
+					continue;
+				}
+				auto probes = 0ll;
+				for (const auto& grid : volume.exposureGrid)
+				{
+					probes += grid.nProbe;
+				}
+				if (probes > best_probes)
+				{
+					best = v;
+					best_probes = probes;
+				}
+			}
+			return best;
+		}
+
 		namespace
 		{
 			// The loader hands DB_AddXAsset the asset struct in zone memory; the struct is copied
@@ -135,6 +173,23 @@ namespace zonetool::t7
 					}
 				}
 
+				// models only the level scripts set (no entity places them): ZT_SCRIPT_MODELS, comma separated BO3 names
+				if (const auto* names = std::getenv("ZT_SCRIPT_MODELS"))
+				{
+					for (const auto& name : utils::string::split(names, ','))
+					{
+						const auto* entry = zonetool::t7::DB_FindXAssetEntry(ASSET_TYPE_XMODEL, name.data(), false);
+						if (entry && entry->asset.header.model)
+						{
+							add(entry->asset.header.model);
+						}
+						else
+						{
+							ZONETOOL_WARNING("script model \"%s\" is not loaded", name.data());
+						}
+					}
+				}
+
 				return out;
 			}
 
@@ -215,8 +270,13 @@ namespace zonetool::t7
 			// A BO3 zombies map becomes an IW7 zombies (CP) map, and IW7 decides that by the map's name: the level
 			// and fx scripts load from scripts/cp/maps/<map>/ only when the name starts with "cp_" (0x140CDB930,
 			// strncmp(map, "cp_", 3), used by 0x140B5C650 and 0x140768AE0), scripts/mp/maps/ otherwise.
+			// ZT_IW7_MAP_NAME: a shorter name than the BO3 one (zm_waterparkfinale -> cp_waterpark)
+			if (const auto* name = std::getenv("ZT_IW7_MAP_NAME"); name && *name)
+			{
+				return name;
+			}
 			const auto name = t7_map_name(t7_bsp_name);
-			return zombies_map(t7_bsp_name) ? "cp_" + name : name;
+			return zombies_map(t7_bsp_name) ? "cp_" + name.substr(3) : name;
 		}
 
 		std::string bsp_name(const std::string& t7_bsp_name)

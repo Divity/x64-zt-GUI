@@ -1,6 +1,7 @@
 #include <std_include.hpp>
 #include "zonetool/t7/converter/iw7/include.hpp"
 #include "xmodel_mesh.hpp"
+#include "static_model_clusters.hpp"
 #include "xmodel.hpp"
 
 #include "zonetool/iw7/assets/xsurface.hpp"
@@ -379,6 +380,26 @@ namespace zonetool::t7
 
 						new_surf->triIndices = reinterpret_cast<zonetool::iw7::Face*>(indices);
 
+						// a single static model's per vertex light probe blend (static_model_clusters::light_probes)
+						auto* simplex = allocator.allocate_array<zonetool::iw7::SHProbeSimplexData1>(new_surf->vertCount);
+						auto with_probes = new_surf->vertCount > 0;
+						for (auto j = 0; j < new_surf->vertCount && with_probes; j++)
+						{
+							const auto& v = new_surf->verts0.packedVerts0[j];
+							float n[3];
+							for (auto c = 0; c < 3; c++)
+							{
+								n[c] = static_cast<float>((v.normal.packed >> (10 * c)) & 0x3FF) / 1023.0f * 2.0f - 1.0f;
+							}
+							normalize(n);
+							with_probes = static_model_clusters::write_probe_simplex(asset, v.xyz, n, reinterpret_cast<unsigned char*>(&simplex[j]));
+						}
+						if (with_probes)
+						{
+							new_surf->flags |= zonetool::iw7::SURF_FLAG_SECONDUV | zonetool::iw7::SURF_FLAG_MAYHEM_CUSTOM_CHANNELS;
+							new_surf->shProbeSimplexVertData.data1 = simplex;
+						}
+
 						if ((surf->flags & XSURFACE_FLAG_SKINNED) != 0)
 						{
 							write_blend_verts(new_surf, allocator, weights, bones);
@@ -486,6 +507,134 @@ namespace zonetool::t7
 					{
 						return false;
 					}
+				}
+				return true;
+			}
+
+			void model_space_vertices(XModelMesh* asset, std::vector<std::array<float, 6>>& out)
+			{
+				std::vector<std::uint8_t> streamed;
+				const auto* data = asset ? mesh_data(asset, streamed) : nullptr;
+				if (!data)
+				{
+					return;
+				}
+				const auto& offset = model_offset::get(asset->name ? asset->name : "");
+				for (auto i = 0; i < asset->numSurfs; i++)
+				{
+					const auto* surf = &asset->surfs[i];
+					if (!surf->shared || !surf->shared->dataSize)
+					{
+						continue;
+					}
+					const auto* stream = reinterpret_cast<const GfxStreamVertex*>(data + surf->shared->vertsOffset + surf->baseVertOffset * sizeof(GfxStreamVertex));
+					const auto* positions = reinterpret_cast<const vec3_t*>(data + surf->shared->posOffset + surf->baseVertOffset * sizeof(vec3_t));
+					for (auto j = 0; j < surf->vertCount; j++)
+					{
+						std::array<float, 6> v{ positions[j][0], positions[j][1], positions[j][2] };
+						if (offset.valid)
+						{
+							model_offset::apply_point(offset, v.data());
+						}
+						t7_unpack_unit(static_cast<std::uint32_t>(stream[j].VertexNormal), &v[3]);
+						model_offset::apply_dir(offset, &v[3]);
+						normalize(&v[3]);
+						out.push_back(v);
+					}
+				}
+			}
+
+			bool append_placed_world(XModelMesh* asset, const unsigned int surface, const unsigned int first_triangle,
+				const unsigned int triangle_count, const float* origin, const float (*axis)[3], const float scale,
+				std::vector<zonetool::iw7::GfxWorldVertex>& verts, std::vector<unsigned short>& indices, const std::size_t max_vertices)
+			{
+				if (surface >= static_cast<unsigned int>(asset->numSurfs))
+				{
+					return false;
+				}
+				const auto* surf = &asset->surfs[surface];
+				if ((surf->flags & XSURFACE_FLAG_SKINNED) != 0 || !surf->shared || !surf->shared->dataSize
+					|| first_triangle + triangle_count > surf->triCount)
+				{
+					return false;
+				}
+				std::vector<std::uint8_t> streamed;
+				const auto* data = mesh_data(asset, streamed);
+				if (!data)
+				{
+					return false;
+				}
+				const auto* stream = reinterpret_cast<const GfxStreamVertex*>(data + surf->shared->vertsOffset + surf->baseVertOffset * sizeof(GfxStreamVertex));
+				const auto* faces = reinterpret_cast<const GfxStreamFace*>(data + surf->shared->indicesOffset + surf->baseIndexOffset * 2);
+				const auto* positions = reinterpret_cast<const vec3_t*>(data + surf->shared->posOffset + surf->baseVertOffset * sizeof(vec3_t));
+				const auto& offset = model_offset::get(asset->name ? asset->name : "");
+				const auto place_dir = [&](const float* d, float* out)
+				{
+					for (auto c = 0; c < 3; c++)
+					{
+						out[c] = d[0] * axis[0][c] + d[1] * axis[1][c] + d[2] * axis[2][c];
+					}
+					normalize(out);
+				};
+
+				const auto mirrored = axis[0][0] * (axis[1][1] * axis[2][2] - axis[1][2] * axis[2][1])
+					- axis[0][1] * (axis[1][0] * axis[2][2] - axis[1][2] * axis[2][0])
+					+ axis[0][2] * (axis[1][0] * axis[2][1] - axis[1][1] * axis[2][0]) < 0.0f;
+				// the vertices the triangles use, in first use order
+				std::vector<int> local(surf->vertCount, -1);
+				std::vector<unsigned int> used;
+				for (auto t = first_triangle; t < first_triangle + triangle_count; t++)
+				{
+					for (const auto j : { faces[t].Index1, faces[t].Index2, faces[t].Index3 })
+					{
+						if (local[j] < 0)
+						{
+							local[j] = static_cast<int>(used.size());
+							used.push_back(j);
+						}
+					}
+				}
+				if (verts.size() + used.size() > std::min<std::size_t>(max_vertices, 0xFFFF))
+				{
+					return false;
+				}
+				const auto first = static_cast<unsigned short>(verts.size());
+				for (const auto j : used)
+				{
+					zonetool::iw7::GfxWorldVertex v{};
+					float p[3] = { positions[j][0], positions[j][1], positions[j][2] };
+					if (offset.valid)
+					{
+						model_offset::apply_point(offset, p);
+					}
+					for (auto c = 0; c < 3; c++)
+					{
+						v.xyz[c] = origin[c] + scale * (p[0] * axis[0][c] + p[1] * axis[1][c] + p[2] * axis[2][c]);
+					}
+					std::memcpy(v.color.array, stream[j].Color, 4);
+					v.texCoord[0] = DirectX::PackedVector::XMConvertHalfToFloat(stream[j].UVUPosition);
+					v.texCoord[1] = DirectX::PackedVector::XMConvertHalfToFloat(stream[j].UVVPosition);
+
+					float n[3], t[3], wn[3], wt[3];
+					t7_unpack_unit(static_cast<std::uint32_t>(stream[j].VertexNormal), n);
+					t7_unpack_unit(static_cast<std::uint32_t>(stream[j].VertexTangent), t);
+					model_offset::apply_dir(offset, n);
+					model_offset::apply_dir(offset, t);
+					place_dir(n, wn);
+					place_dir(t, wt);
+					// a mirror turns the bitangent against the placed normal and tangent
+					const auto positive = ((static_cast<std::uint32_t>(stream[j].VertexTangent) >> 30) >= 2) != mirrored;
+					v.normal.packed = iw7_pack_unit(wn, 3);
+					v.tangent.packed = iw7_pack_unit(wt, positive ? 0 : 3);
+					v.binormalSign = positive ? 1.0f : -1.0f;
+					verts.push_back(v);
+				}
+				for (auto t = first_triangle; t < first_triangle + triangle_count; t++)
+				{
+					const auto& f = faces[t];
+					indices.push_back(static_cast<unsigned short>(first + local[f.Index1]));
+					indices.push_back(static_cast<unsigned short>(first + local[mirrored ? f.Index3 : f.Index2]));
+					indices.push_back(static_cast<unsigned short>(first + local[mirrored ? f.Index2 : f.Index3]));
 				}
 				return true;
 			}

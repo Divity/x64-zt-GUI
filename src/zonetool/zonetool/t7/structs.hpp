@@ -3340,6 +3340,7 @@ namespace zonetool::t7
 
 	struct GfxLitFogVolume
 	{
+		char __pad0[8]; // zm_waterparkfinale's bounds, ambient (1 1 1) and priority read sensibly only from +8
 		vec3_t mins;
 		vec3_t maxs;
 		vec3_t ambientColor;
@@ -3347,7 +3348,6 @@ namespace zonetool::t7
 		uint16_t priority;
 		uint scriptid;
 		float fogtime;
-		char __pad0[8];
 		GfxConfig_LitFogBank bank[4];
 	};
 

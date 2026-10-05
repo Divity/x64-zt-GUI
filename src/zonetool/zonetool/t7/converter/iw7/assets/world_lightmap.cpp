@@ -55,6 +55,8 @@ namespace zonetool::t7
 			constexpr std::uint32_t sun_grid = 4;
 			constexpr double sun_range = 2.0;
 			constexpr std::uint32_t max_chart_texels = 1024;
+			// a placed model part's texels against the world's: small props took the light grid's few samples as static models
+			constexpr float part_texel_factor = 4.0f;
 			constexpr float crease_cos = 0.5f; // a triangle more than 60 degrees off its chart's normal starts another
 			// the finest lightmap texel, in probe volume texels; the atlas decides how coarse it gets. The sun's visibility
 			// shares the atlas and wants it fine: thin bars shadow strips a few units wide
@@ -230,6 +232,7 @@ namespace zonetool::t7
 				float min_u = 0.0f, min_v = 0.0f, max_u = 0.0f, max_v = 0.0f;
 				float texel = 1.0f; // world units per texel
 				float probe_texel = 1.0f;
+				bool part = false; // a placed model part's box projected chart: part_texel_factor coarser, one sun ray a texel
 				std::uint32_t width = 0, height = 0; // texels, margins included
 				std::uint32_t x = 0, y = 0;
 			};
@@ -421,15 +424,17 @@ namespace zonetool::t7
 			// Charts over all lightmapped triangles, largest triangles seeding first. Charts that fold over
 			// themselves in their projection (spiral ramps and the like) would share texels between their
 			// layers: their triangles are charted again with the overlap test.
-			std::vector<chart> build_charts(const triangle_set& set, std::vector<unsigned int>& chart_of, unsigned int& folded_count)
+			// `charts` and `chart_of` come with the box projected part charts (bake), which keep their triangles: a part's
+			// overlapping projections share texels
+			std::vector<chart> build_charts(const triangle_set& set, std::vector<chart> charts, std::vector<unsigned int>& chart_of,
+				unsigned int& folded_count)
 			{
 				const auto count = static_cast<unsigned int>(set.size());
 				std::vector<unsigned int> order(count);
 				std::iota(order.begin(), order.end(), 0u);
 				std::stable_sort(order.begin(), order.end(), [&](const unsigned int a, const unsigned int b) { return set.areas[a] > set.areas[b]; });
 
-				std::vector<chart> charts;
-				chart_of.assign(count, unassigned);
+				const auto fixed_count = charts.size();
 				for (const auto seed : order)
 				{
 					if (chart_of[seed] == unassigned)
@@ -445,7 +450,7 @@ namespace zonetool::t7
 				parallel_for(static_cast<std::uint32_t>(charts.size()), [&](const std::uint32_t i, std::uint32_t)
 				{
 					const auto& c = charts[i];
-					if (c.triangles.size() < 3)
+					if (c.triangles.size() < 3 || i < fixed_count)
 					{
 						return;
 					}
@@ -534,7 +539,7 @@ namespace zonetool::t7
 			// scale: lightmap texel size in probe volume texels
 			void size_chart(chart& c, const float scale)
 			{
-				c.texel = std::max(min_texel_size, c.probe_texel * scale);
+				c.texel = std::max(min_texel_size, c.probe_texel * scale * (c.part ? part_texel_factor : 1.0f));
 				const auto extent = std::max(c.max_u - c.min_u, c.max_v - c.min_v);
 				// a chart may not outgrow max_chart_texels: its texels get coarser instead
 				if (extent / c.texel > static_cast<float>(max_chart_texels))
@@ -1014,6 +1019,18 @@ namespace zonetool::t7
 			const zonetool::iw7::GfxWorldTransientZone* zone, const std::vector<std::uint8_t>& occluders)
 			: impl_(std::make_unique<impl>())
 		{
+			this->build(asset, world, zone, &occluders);
+		}
+
+		sun_blockers::sun_blockers(const GfxWorld* asset)
+			: impl_(std::make_unique<impl>())
+		{
+			this->build(asset, nullptr, nullptr, nullptr);
+		}
+
+		void sun_blockers::build(const GfxWorld* asset, const zonetool::iw7::GfxWorld* world,
+			const zonetool::iw7::GfxWorldTransientZone* zone, const std::vector<std::uint8_t>* occluders)
+		{
 			std::vector<float> sun_triangles;
 			// the alpha tested ones: per triangle its three uv0 and its mask
 			std::vector<float> alpha_triangles, alpha_uvs;
@@ -1025,11 +1042,38 @@ namespace zonetool::t7
 			const auto& clusters = static_model_clusters::current();
 			std::unordered_map<const Material*, std::uint32_t> mask_of_material;
 			auto alpha_model_triangles = 0u;
+			if (!world)
 			{
-				const auto sky = world_sky::surfaces(world);
-				for (auto s = 0u; s < world->dpvs.staticSurfaceCount; s++)
+				// BO3's static surfaces: those that cast (flag 1, as the IW7 surfaces' sun flag) with an opaque caster material
+				for (auto s = 0u; s < asset->dpvs.staticSurfaceCount; s++)
 				{
-					if (sky[s] || !occluders[s])
+					const auto& surface = asset->dpvs.surfaces[s];
+					const auto* material = surface.material;
+					if (!(surface.flags & 1) || !world_material::model_blocks_sun(material) || world_material::bake::alpha_mask_of(material))
+					{
+						continue;
+					}
+					const auto name = world_material::bake::bo3_template(material);
+					if (name.find("alpha") != std::string::npos || name.find("atest") != std::string::npos || name.find("foliage") != std::string::npos)
+					{
+						continue;
+					}
+					const auto first = static_cast<unsigned int>(surface.tris.vertexDataOffset0) / 12u;
+					const auto* indices = asset->draw.indices + surface.tris.baseIndex;
+					for (auto t = 0u; t < surface.tris.triCount * 3u; t++)
+					{
+						const auto* xyz = reinterpret_cast<const float*>(asset->draw.vd0.data + (first + indices[t]) * 12u);
+						sun_triangles.insert(sun_triangles.end(), xyz, xyz + 3);
+					}
+					// a BO3 static surface: 0x80000000 | its index (no static model's)
+					sun_owner.insert(sun_owner.end(), surface.tris.triCount, 0x80000000u | s);
+				}
+			}
+			{
+				const auto sky = world ? world_sky::surfaces(world) : std::vector<std::uint8_t>{};
+				for (auto s = 0u; world && s < world->dpvs.staticSurfaceCount; s++)
+				{
+					if (sky[s] || !(*occluders)[s])
 					{
 						continue;
 					}
@@ -1059,7 +1103,7 @@ namespace zonetool::t7
 				for (auto i = 0u; i < asset->dpvs.smodelCount; i++)
 				{
 					const auto& src = asset->dpvs.smodelDrawInsts[i];
-					const auto owner = i < clusters.iw7_index.size() ? clusters.iw7_index[i] : no_owner;
+					const auto owner = !world ? i : i < clusters.iw7_index.size() ? clusters.iw7_index[i] : no_owner;
 					if (!src.model)
 					{
 						continue;
@@ -1179,11 +1223,85 @@ namespace zonetool::t7
 			});
 		}
 
+		std::pair<int, std::uint32_t> sun_blockers::blocker(const double from[3], const double to[3], const std::uint32_t* ignore_model) const
+		{
+			const auto& d = *impl_;
+			std::pair<int, std::uint32_t> found{ 0, ~0u };
+			if (d.opaque->blocked(from, to, 1e-7, 1.0, [&](const std::uint32_t triangle, double, double)
+			{
+				if (ignore_model && d.opaque_owner[triangle] == *ignore_model)
+				{
+					return false;
+				}
+				found = { 1, d.opaque_owner[triangle] };
+				return true;
+			}))
+			{
+				return found;
+			}
+			if (d.alpha->blocked(from, to, 1e-7, 1.0, [&](const std::uint32_t triangle, const double u, const double v)
+			{
+				if ((ignore_model && d.alpha_owner[triangle] == *ignore_model) || !d.alpha_blocks(triangle, u, v))
+				{
+					return false;
+				}
+				found = { 2, d.alpha_owner[triangle] };
+				return true;
+			}))
+			{
+				return found;
+			}
+			return { 0, ~0u };
+		}
+
+		float sun_fraction(const sun_blockers& blockers, const float sun_dir[3], const float p[3], const std::uint32_t* ignore_model)
+		{
+			double d[3] = { sun_dir[0], sun_dir[1], sun_dir[2] };
+			const auto len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+			if (len <= 0.0)
+			{
+				return 1.0f;
+			}
+			for (auto& c : d)
+			{
+				c /= len;
+			}
+			// two axes across the sun direction
+			double u[3] = { 0.0, 0.0, 0.0 };
+			u[std::fabs(d[2]) < 0.9 ? 2 : 0] = 1.0;
+			double t1[3] = { d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0] };
+			const auto l1 = std::sqrt(t1[0] * t1[0] + t1[1] * t1[1] + t1[2] * t1[2]);
+			for (auto& c : t1)
+			{
+				c /= l1;
+			}
+			const double t2[3] = { d[1] * t1[2] - d[2] * t1[1], d[2] * t1[0] - d[0] * t1[2], d[0] * t1[1] - d[1] * t1[0] };
+			constexpr double spread = 0.00872665; // tan(0.5 degrees)
+			constexpr double offsets[5][2] = { { 0, 0 }, { spread, 0 }, { -spread, 0 }, { 0, spread }, { 0, -spread } };
+			constexpr double reach = 131072.0;
+			auto open = 0;
+			for (const auto& o : offsets)
+			{
+				const double from[3] = { p[0] + d[0], p[1] + d[1], p[2] + d[2] };
+				double to[3];
+				for (auto k = 0; k < 3; k++)
+				{
+					to[k] = from[k] + (d[k] + t1[k] * o[0] + t2[k] * o[1]) * reach;
+				}
+				if (!blockers.blocked(from, to, ignore_model))
+				{
+					open++;
+				}
+			}
+			return static_cast<float>(open) / 5.0f;
+		}
+
 		void bake(const GfxWorld* asset, zonetool::iw7::GfxWorld* world, zonetool::iw7::GfxWorldTransientZone* zone,
-			const sun_blockers& blockers, utils::memory::allocator& allocator)
+			const sun_blockers& blockers, const std::unordered_map<unsigned int, std::vector<unsigned int>>& pieces,
+			utils::memory::allocator& allocator)
 		{
 			const auto start = std::chrono::steady_clock::now();
-			probe_lighting::evaluator lighting(asset, 0);
+			probe_lighting::evaluator lighting(asset, map::lighting_state());
 
 			const auto* com = comworld::converted();
 			const auto& sun = com->primaryLights[world->lastSunPrimaryLightIndex];
@@ -1213,9 +1331,54 @@ namespace zonetool::t7
 			// ---- charts --------------------------------------------------------------------------
 			std::vector<unsigned int> first_triangle; // per surface, its first triangle_set index
 			const auto set = collect_triangles(world, zone, first_triangle);
-			std::vector<unsigned int> chart_of;
+			// the placed parts' charts: per part, one a box axis (+x -x +y -y +z -z) its triangles' normals lean to
+			std::vector<unsigned int> chart_of(set.size(), unassigned);
+			std::vector<chart> part_charts;
+			for (const auto& [s, starts] : pieces)
+			{
+				if (first_triangle[s] == unassigned)
+				{
+					continue;
+				}
+				const auto triangles = world->dpvs.surfaces[s].tris.triCount;
+				for (auto p = 0u; p < starts.size(); p++)
+				{
+					const auto end = p + 1 < starts.size() ? starts[p + 1] : static_cast<unsigned int>(triangles);
+					unsigned int axis_chart[6];
+					std::fill(std::begin(axis_chart), std::end(axis_chart), unassigned);
+					for (auto local = starts[p]; local < end; local++)
+					{
+						const auto t = first_triangle[s] + local;
+						const auto& n = set.normals[t];
+						auto k = 2;
+						if (std::fabs(n[0]) >= std::fabs(n[1]) && std::fabs(n[0]) >= std::fabs(n[2]))
+						{
+							k = 0;
+						}
+						else if (std::fabs(n[1]) >= std::fabs(n[2]))
+						{
+							k = 1;
+						}
+						const auto a = k * 2 + (n[k] < 0.0f ? 1 : 0);
+						if (axis_chart[a] == unassigned)
+						{
+							axis_chart[a] = static_cast<unsigned int>(part_charts.size());
+							auto& c = part_charts.emplace_back();
+							c.part = true;
+							c.normal = { 0.0f, 0.0f, 0.0f };
+							c.normal[k] = (a & 1) ? -1.0f : 1.0f;
+							set_projection(c);
+						}
+						part_charts[axis_chart[a]].triangles.push_back(t);
+						chart_of[t] = axis_chart[a];
+					}
+				}
+			}
+			const auto part_chart_count = part_charts.size();
 			auto folded = 0u;
-			auto charts = build_charts(set, chart_of, folded);
+			auto charts = build_charts(set, std::move(part_charts), chart_of, folded);
+			ZONETOOL_INFO("lightmap: %zu charts of placed models' parts (box projected), %zu of the world's", part_chart_count,
+				charts.size() - part_chart_count);
 
 			// the charts' extents, and how finely the probe lighting varies at each
 			parallel_for(static_cast<std::uint32_t>(charts.size()), [&](const std::uint32_t i, std::uint32_t)
@@ -1477,6 +1640,7 @@ namespace zonetool::t7
 			{
 				by_volume[volume_of[k]].push_back(k);
 			}
+			std::atomic<std::size_t> baked{ 0 };
 			for (auto v = 0u; v < by_volume.size(); v++)
 			{
 				if (by_volume[v].empty())
@@ -1505,7 +1669,13 @@ namespace zonetool::t7
 					known[t] = 1;
 					// the sun at sun_grid x sun_grid points over the texel (the chart's axes, flattened onto the surface)
 					std::uint16_t bits = 0xFFFF;
-					if (sun_on)
+					if (sun_on && charts[chart_of[smp.triangle]].part)
+					{
+						// a part's texel: one ray from its point
+						const double q[3] = { p.position[0], p.position[1], p.position[2] };
+						bits = sun_open(q, p.normal.data()) ? 0xFFFF : 0;
+					}
+					else if (sun_on)
 					{
 						bits = 0;
 						const auto& c = charts[chart_of[smp.triangle]];
@@ -1533,6 +1703,11 @@ namespace zonetool::t7
 						}
 					}
 					sun_bits[by_volume[v][k]] = bits;
+					const auto n = ++baked;
+					if (n * 20 / samples.size() != (n - 1) * 20 / samples.size())
+					{
+						ZONETOOL_INFO("lightmap: %zu of %zu texels baked", n, samples.size());
+					}
 				});
 				lighting.unload(v);
 			}

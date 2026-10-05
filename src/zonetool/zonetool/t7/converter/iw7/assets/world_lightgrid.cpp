@@ -387,49 +387,12 @@ namespace zonetool::t7
 				{
 					return 1.0f;
 				}
-				double d[3] = { sun.dir[0], sun.dir[1], sun.dir[2] };
-				const auto len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-				if (len <= 0.0)
-				{
-					return 1.0f;
-				}
-				for (auto& c : d)
-				{
-					c /= len;
-				}
-				// two axes across the sun direction
-				double u[3] = { 0.0, 0.0, 0.0 };
-				u[std::fabs(d[2]) < 0.9 ? 2 : 0] = 1.0;
-				double t1[3] = { d[1] * u[2] - d[2] * u[1], d[2] * u[0] - d[0] * u[2], d[0] * u[1] - d[1] * u[0] };
-				const auto l1 = std::sqrt(t1[0] * t1[0] + t1[1] * t1[1] + t1[2] * t1[2]);
-				for (auto& c : t1)
-				{
-					c /= l1;
-				}
-				const double t2[3] = { d[1] * t1[2] - d[2] * t1[1], d[2] * t1[0] - d[0] * t1[2], d[0] * t1[1] - d[1] * t1[0] };
-				constexpr double spread = 0.00872665; // tan(0.5 degrees)
-				constexpr double offsets[5][2] = { { 0, 0 }, { spread, 0 }, { -spread, 0 }, { 0, spread }, { 0, -spread } };
-				constexpr double reach = 131072.0;
-				auto open = 0;
-				for (const auto& o : offsets)
-				{
-					const double from[3] = { p[0] + d[0], p[1] + d[1], p[2] + d[2] };
-					double to[3];
-					for (auto k = 0; k < 3; k++)
-					{
-						to[k] = from[k] + (d[k] + t1[k] * o[0] + t2[k] * o[1]) * reach;
-					}
-					if (!sun_blockers.blocked(from, to, ignore_model))
-					{
-						open++;
-					}
-				}
-				return static_cast<float>(open) / 5.0f;
+				return world_lightmap::sun_fraction(sun_blockers, sun.dir, p, ignore_model);
 			};
 
 			// ---- where probes go: roots with geometry inside BO3's detailed local probes ---------------------------------
 			// (BO3's coarse probes, texels of hundreds of units, may cover the whole map including its vistas)
-			probe_lighting::evaluator lighting(asset, 0);
+			probe_lighting::evaluator lighting(asset, map::lighting_state());
 			for (auto v = 0u; v < lighting.volume_count(); v++)
 			{
 				lighting.load(v);
@@ -1047,12 +1010,25 @@ namespace zonetool::t7
 			}
 
 			const auto smodels = world->dpvs.smodelCount;
+			std::unordered_map<std::uint32_t, float> cluster_sun;
+			{
+				const auto& plan = static_model_clusters::current();
+				for (const auto& c : plan.clusters)
+				{
+					if (c.sun >= 0.0f && !c.members.empty() && c.members.front() < plan.iw7_index.size())
+					{
+						cluster_sun.emplace(plan.iw7_index[c.members.front()], c.sun);
+					}
+				}
+			}
 			std::vector<sh_coeffs> model_sh(smodels);
 			parallel_for(smodels, [&](const std::uint32_t m, std::uint32_t)
 			{
 				// at its lighting origin: a merged model's brightest member (static_model_clusters)
+				// a merged model's members share one sun visibility (static_model_clusters groups them by it): theirs
 				const auto* p = world->dpvs.smodelInsts[m].lightingOrigin;
-				probe_sh(lighting, p, sun_visibility(p, &m), model_sh[m]);
+				const auto cluster = cluster_sun.find(m);
+				probe_sh(lighting, p, cluster != cluster_sun.end() ? cluster->second : sun_visibility(p, &m), model_sh[m]);
 			});
 			{
 				// the sun's reach (coefficient 27 above 0): a probe or static model it reaches is sunlit past the cascades
@@ -1067,26 +1043,49 @@ namespace zonetool::t7
 				}
 				ZONETOOL_INFO("light grid: the sun reaches %u of %u probes and %u of %u static models", probes_lit, probes, models_lit, smodels);
 			}
-			pd.gpuVisibleProbesCount = smodels * smodel_samples;
-			pd.gpuVisibleProbePositions = allocator.allocate_array<zonetool::iw7::GfxGpuLightGridProbePosition>(std::max(1u, pd.gpuVisibleProbesCount));
-			pd.gpuVisibleProbesData = allocator.allocate_array<zonetool::iw7::GfxSHProbeData>(pd.gpuVisibleProbesCount + runtime_probe_slots);
+			// a cluster's own probes (static_model_clusters::light_probes), each vertex blending four of them (level 3, as
+			// Spaceland's large models), then its fade probe (the model's sample); any other model two copies of its sample
+			std::vector<std::uint32_t> first_slot(smodels + 1, 0u);
 			for (auto m = 0u; m < smodels; m++)
 			{
-				unsigned short coeffs[32];
-				lightgrid_probes::encode_probe_sh(model_sh[m].data(), coeffs);
-				for (auto k = 0u; k < smodel_samples; k++)
+				const auto& own = static_model_clusters::light_probes(m);
+				first_slot[m + 1] = first_slot[m] + (own.empty() ? smodel_samples : static_cast<unsigned int>(own.size()) + 1);
+			}
+			pd.gpuVisibleProbesCount = first_slot[smodels];
+			pd.gpuVisibleProbePositions = allocator.allocate_array<zonetool::iw7::GfxGpuLightGridProbePosition>(std::max(1u, pd.gpuVisibleProbesCount));
+			pd.gpuVisibleProbesData = allocator.allocate_array<zonetool::iw7::GfxSHProbeData>(pd.gpuVisibleProbesCount + runtime_probe_slots);
+			std::atomic<unsigned int> own_probes = 0, own_lit = 0;
+			parallel_for(smodels, [&](const std::uint32_t m, std::uint32_t)
+			{
+				const auto& own = static_model_clusters::light_probes(m);
+				const auto put = [&](const std::uint32_t slot, const float* origin, const sh_coeffs& sh)
 				{
-					const auto slot = m * smodel_samples + k;
-					std::memcpy(pd.gpuVisibleProbePositions[slot].origin, world->dpvs.smodelInsts[m].lightingOrigin, sizeof(float) * 3);
+					unsigned short coeffs[32];
+					lightgrid_probes::encode_probe_sh(sh.data(), coeffs);
+					std::memcpy(pd.gpuVisibleProbePositions[slot].origin, origin, sizeof(float) * 3);
 					std::memcpy(&pd.gpuVisibleProbesData[slot], coeffs, sizeof(coeffs));
+				};
+				const auto first = first_slot[m];
+				for (auto k = 0u; k < own.size(); k++)
+				{
+					sh_coeffs sh;
+					probe_sh(lighting, own[k].data(), sun_visibility(own[k].data(), nullptr), sh);
+					put(first + k, own[k].data(), sh);
+					own_lit += sh[27] >= 0.5f;
+				}
+				own_probes += static_cast<unsigned int>(own.size());
+				const auto samples = first_slot[m + 1] - first;
+				for (auto k = static_cast<std::uint32_t>(own.size()); k < samples; k++)
+				{
+					put(first + k, world->dpvs.smodelInsts[m].lightingOrigin, model_sh[m]);
 				}
 				auto& inst = world->dpvs.smodelDrawInsts[m];
-				const auto first = m * smodel_samples;
 				inst.unk0 = static_cast<unsigned short>(first & 0xFFFF);
 				inst.unk1 = static_cast<unsigned short>(first >> 16);
-				inst.unk2 = 0;
-				inst.unk3 = static_cast<unsigned short>(smodel_samples);
-			}
+				inst.unk2 = own.empty() ? 0 : 3;
+				inst.unk3 = static_cast<unsigned short>(samples);
+			});
+			ZONETOOL_INFO("light grid: %u static model probes of their own, the sun reaching %u", own_probes.load(), own_lit.load());
 
 			// ---- the tetrahedral grid ------------------------------------------------------------------------------
 			pd.tetrahedronCount = tet_count;
@@ -1205,70 +1204,112 @@ namespace zonetool::t7
 					}
 				}
 			}
+			// each lit leaf's list: [spots << 7 | omnis, spots, omnis], interned. IW7 addresses them with 16 bits; a map
+			// whose exact lists do not fit gives every leaf the list of the aligned block it lies in (the lights reaching
+			// the block: all of the leaf's and some that add nothing to it), the block doubling until they fit
 			std::vector<std::vector<unsigned short>> leaf_hits(leaf_count);
-			parallel_for(static_cast<std::uint32_t>(root_nodes.size()), [&](const std::uint32_t r, std::uint32_t)
-			{
-				const auto& candidates = root_lights[r];
-				if (candidates.empty())
-				{
-					return;
-				}
-				std::vector<unsigned short> spots, omnis;
-				for (auto l = root_first_leaf[r]; l < root_first_leaf[r + 1]; l++)
-				{
-					const auto& leaf = leaves[l];
-					const auto size = static_cast<float>(leaf.size) * cell;
-					const float lo[3] = { leaf.cell[0] * cell, leaf.cell[1] * cell, leaf.cell[2] * cell };
-					const float hi[3] = { lo[0] + size, lo[1] + size, lo[2] + size };
-					spots.clear();
-					omnis.clear();
-					for (const auto i : candidates)
-					{
-						if (reaches(lights[i], lo, hi))
-						{
-							(lights[i].spot ? spots : omnis).push_back(lights[i].index);
-						}
-					}
-					if (spots.size() > 0x1FF || omnis.size() > 0x7F)
-					{
-						throw std::runtime_error(utils::string::va("light grid: voxel %u is reached by %zu spot and %zu omni lights", l, spots.size(), omnis.size()));
-					}
-					if (spots.empty() && omnis.empty())
-					{
-						continue;
-					}
-					auto& list = leaf_hits[l];
-					list.push_back(static_cast<unsigned short>((spots.size() << 7) | omnis.size()));
-					list.insert(list.end(), spots.begin(), spots.end());
-					list.insert(list.end(), omnis.begin(), omnis.end());
-				}
-			});
-			std::vector<unsigned short> light_list{ 16384, 1, 0 };
+			std::vector<unsigned short> light_list;
 			std::vector<unsigned short> leaf_address(leaf_count, voxel_list_empty);
 			std::map<std::vector<unsigned short>, unsigned short> interned;
 			auto lit_leaves = 0u;
 			auto most_spots = 0u, most_omnis = 0u;
-			for (auto l = 0u; l < leaf_count; l++)
+			auto block = 0.0f;
+			for (;;)
 			{
-				const auto& list = leaf_hits[l];
-				if (list.empty())
+				std::atomic<bool> over_cap = false;
+				parallel_for(static_cast<std::uint32_t>(root_nodes.size()), [&](const std::uint32_t r, std::uint32_t)
 				{
-					continue;
-				}
-				lit_leaves++;
-				most_spots = std::max(most_spots, static_cast<unsigned int>(list[0] >> 7));
-				most_omnis = std::max(most_omnis, static_cast<unsigned int>(list[0] & 0x7F));
-				auto found = interned.find(list);
-				if (found == interned.end())
-				{
-					if (light_list.size() + list.size() > 0xFFFF)
+					const auto& candidates = root_lights[r];
+					std::vector<unsigned short> spots, omnis;
+					for (auto l = root_first_leaf[r]; l < root_first_leaf[r + 1]; l++)
 					{
-						ZONETOOL_FATAL("light grid: the voxel light lists outgrow 16-bit addresses");
+						leaf_hits[l].clear();
+						if (candidates.empty())
+						{
+							continue;
+						}
+						const auto& leaf = leaves[l];
+						const auto size = static_cast<float>(leaf.size) * cell;
+						float lo[3] = { leaf.cell[0] * cell, leaf.cell[1] * cell, leaf.cell[2] * cell };
+						float hi[3] = { lo[0] + size, lo[1] + size, lo[2] + size };
+						if (block > 0.0f)
+						{
+							for (auto k = 0; k < 3; k++)
+							{
+								lo[k] = std::floor(lo[k] / block) * block;
+								hi[k] = std::max(std::ceil(hi[k] / block) * block, lo[k] + block);
+							}
+						}
+						spots.clear();
+						omnis.clear();
+						for (const auto i : candidates)
+						{
+							if (reaches(lights[i], lo, hi))
+							{
+								(lights[i].spot ? spots : omnis).push_back(lights[i].index);
+							}
+						}
+						if (spots.size() > 0x1FF || omnis.size() > 0x7F)
+						{
+							if (block == 0.0f)
+							{
+								throw std::runtime_error(utils::string::va("light grid: voxel %u is reached by %zu spot and %zu omni lights", l, spots.size(), omnis.size()));
+							}
+							over_cap = true;
+							continue;
+						}
+						if (spots.empty() && omnis.empty())
+						{
+							continue;
+						}
+						auto& list = leaf_hits[l];
+						list.push_back(static_cast<unsigned short>((spots.size() << 7) | omnis.size()));
+						list.insert(list.end(), spots.begin(), spots.end());
+						list.insert(list.end(), omnis.begin(), omnis.end());
 					}
-					found = interned.emplace(list, static_cast<unsigned short>(light_list.size())).first;
-					light_list.insert(light_list.end(), list.begin(), list.end());
+				});
+				if (over_cap)
+				{
+					ZONETOOL_FATAL("light grid: the voxel light lists outgrow 16-bit addresses and %g unit blocks are reached by more "
+						"than 511 spot or 127 omni lights", block);
 				}
-				leaf_address[l] = found->second;
+				light_list = { 16384, 1, 0 };
+				std::fill(leaf_address.begin(), leaf_address.end(), voxel_list_empty);
+				interned.clear();
+				lit_leaves = most_spots = most_omnis = 0;
+				auto fits = true;
+				for (auto l = 0u; l < leaf_count; l++)
+				{
+					const auto& list = leaf_hits[l];
+					if (list.empty())
+					{
+						continue;
+					}
+					lit_leaves++;
+					most_spots = std::max(most_spots, static_cast<unsigned int>(list[0] >> 7));
+					most_omnis = std::max(most_omnis, static_cast<unsigned int>(list[0] & 0x7F));
+					auto found = interned.find(list);
+					if (found == interned.end())
+					{
+						if (light_list.size() + list.size() > 0xFFFF)
+						{
+							fits = false;
+							break;
+						}
+						found = interned.emplace(list, static_cast<unsigned short>(light_list.size())).first;
+						light_list.insert(light_list.end(), list.begin(), list.end());
+					}
+					leaf_address[l] = found->second;
+				}
+				if (fits)
+				{
+					break;
+				}
+				block = block == 0.0f ? 256.0f : block * 2.0f;
+			}
+			if (block > 0.0f)
+			{
+				ZONETOOL_INFO("light grid: the exact voxel light lists outgrow 16-bit addresses; each voxel lists the lights of its %g unit block", block);
 			}
 
 			world->voxelTreeCount = 1;

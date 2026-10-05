@@ -547,7 +547,7 @@ namespace zonetool::t7
 		void convert(const GfxWorld* asset, zonetool::iw7::GfxWorld* world, utils::memory::allocator& allocator)
 		{
 			const auto start = std::chrono::steady_clock::now();
-			probe_lighting::evaluator lighting(asset, 0);
+			probe_lighting::evaluator lighting(asset, map::lighting_state());
 
 			// ---- which BO3 probes become IW7 probes ------------------------------------------------------
 			std::vector<source> probes;
@@ -556,7 +556,7 @@ namespace zonetool::t7
 			auto disabled = 0u, without_blends = 0u;
 			for (auto v = 0u; v < asset->sunVolumeCount; v++)
 			{
-				const auto& array = asset->sunVolumes[v].reflectionProbes[0];
+				const auto& array = asset->sunVolumes[v].reflectionProbes[map::lighting_state()];
 				for (auto i = 1u; i <= array.localReflectionProbeCount; i++)
 				{
 					const auto& probe = array.configs[i];
@@ -591,7 +591,7 @@ namespace zonetool::t7
 			{
 				const auto& list = copies[key];
 				// the copy from the sun volume BO3 lights its capture point with
-				const auto& first = asset->sunVolumes[list[0].volume].reflectionProbes[0].configs[list[0].index];
+				const auto& first = asset->sunVolumes[list[0].volume].reflectionProbes[map::lighting_state()].configs[list[0].index];
 				const auto home = lighting.volume_at(first.config.origin);
 				auto chosen = list[0];
 				for (const auto& s : list)
@@ -617,7 +617,7 @@ namespace zonetool::t7
 
 			const auto config_of = [&](const source& s) -> const GfxReflectionProbe&
 			{
-				return asset->sunVolumes[s.volume].reflectionProbes[0].configs[s.index];
+				return asset->sunVolumes[s.volume].reflectionProbes[map::lighting_state()].configs[s.index];
 			};
 
 			// ---- instances ---------------------------------------------------------------------------------
@@ -630,7 +630,7 @@ namespace zonetool::t7
 				const auto& s = probes[k];
 				if (k < local_count)
 				{
-					local_instances(asset->sunVolumes[s.volume].reflectionProbes[0], config_of(s), k, instances, st);
+					local_instances(asset->sunVolumes[s.volume].reflectionProbes[map::lighting_state()], config_of(s), k, instances, st);
 				}
 				else
 				{
@@ -658,7 +658,7 @@ namespace zonetool::t7
 				{
 					continue;
 				}
-				const auto& array = asset->sunVolumes[v].reflectionProbes[0];
+				const auto& array = asset->sunVolumes[v].reflectionProbes[map::lighting_state()];
 				const auto data = probe_lighting::read_stream_buffer(array.pixelData, utils::string::va("sun volume %u probe cubes", v));
 				parallel_for(static_cast<std::uint32_t>(mine.size()), [&](const std::uint32_t i, std::uint32_t)
 				{

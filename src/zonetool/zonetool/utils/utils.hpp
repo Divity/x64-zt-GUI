@@ -36,7 +36,7 @@ namespace nlohmann
 	}
 }
 
-#define MAX_ZONE_SIZE (1024ull * 1024ull * 1024ull) * 2ull
+#define MAX_ZONE_SIZE (1024ull * 1024ull * 1024ull) * 4ull
 #define MAX_MEM_SIZE (1024ull * 1024ull * 1024ull) * 2ull
 
 #define ZONETOOL_INFO(__FMT__, ...) \

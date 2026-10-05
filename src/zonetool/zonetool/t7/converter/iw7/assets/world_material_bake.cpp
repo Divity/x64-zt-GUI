@@ -4,6 +4,7 @@
 
 #include "material_texture.hpp"
 #include "world_techset_donors.hpp"
+#include "material.hpp"
 #include "../shader_eval.hpp"
 #include "../parallel.hpp"
 #include "../gpu_eval.hpp"
@@ -2118,6 +2119,11 @@ namespace zonetool::t7
 			std::mutex written_mutex;
 			std::unordered_map<std::string, std::string> written_images;
 
+			// each written material's json by name, and the atlas members among them (share_atlas_materials)
+			std::mutex json_mutex;
+			std::unordered_map<std::string, std::string> written_json;
+			std::unordered_set<std::string> atlas_written;
+
 			// false: the (shared) image is written already
 			bool claim_image(const std::string& image, const std::string& material, const bool shared)
 			{
@@ -2215,17 +2221,20 @@ namespace zonetool::t7
 				bool written = false;
 				std::vector<std::vector<std::vector<std::uint8_t>>> cs; // by tile (row x columns + column), then level
 				std::vector<std::vector<std::vector<std::uint8_t>>> ng;
+				std::vector<std::vector<std::vector<std::uint8_t>>> a;
 			};
 
 			std::mutex atlas_mutex;
-			std::unordered_map<const Material*, atlas_slot> atlas_members;
+			std::map<std::pair<const Material*, bool>, atlas_slot> atlas_members; // by material and model
 			std::map<std::string, atlas_pending> atlases; // by cs name
 
 			// the atlas's levels from its tiles' levels: block rows copied while every tile's level is whole BC7 blocks
 			// at its place (the tile size divides by 2^level and the level by 4), the levels below that halved from the
 			// level above (a box filter; 16 texels a tile and less)
-			std::vector<std::vector<std::uint8_t>> compose_atlas(const atlas_pending& a, const std::vector<std::vector<std::vector<std::uint8_t>>>& tiles)
+			std::vector<std::vector<std::uint8_t>> compose_atlas(const atlas_pending& a, const std::vector<std::vector<std::vector<std::uint8_t>>>& tiles,
+				const DXGI_FORMAT format = DXGI_FORMAT_BC7_UNORM)
 			{
+				const std::size_t block_bytes = format == DXGI_FORMAT_BC4_UNORM ? 8 : 16;
 				const auto& l = a.layout;
 				const auto width = l.columns * l.tile_width;
 				const auto height = l.rows * l.tile_height;
@@ -2243,7 +2252,7 @@ namespace zonetool::t7
 					if (whole)
 					{
 						const auto blocks_across = atlas_w / 4;
-						std::vector<std::uint8_t> blocks(static_cast<std::size_t>(blocks_across) * (atlas_h / 4) * 16, 0);
+						std::vector<std::uint8_t> blocks(static_cast<std::size_t>(blocks_across) * (atlas_h / 4) * block_bytes, 0);
 						for (auto t = 0u; t < tiles.size(); t++)
 						{
 							if (tiles[t].size() <= level)
@@ -2251,7 +2260,7 @@ namespace zonetool::t7
 								continue; // a tile its material did not bake
 							}
 							const auto& src = tiles[t][level];
-							const auto row_bytes = static_cast<std::size_t>(tw / 4) * 16;
+							const auto row_bytes = static_cast<std::size_t>(tw / 4) * block_bytes;
 							if (src.size() != row_bytes * (th / 4))
 							{
 								throw std::runtime_error(utils::string::va("atlas %s: tile %u level %u holds %zu bytes, not %zu", l.cs.data(), t,
@@ -2261,7 +2270,7 @@ namespace zonetool::t7
 							const auto row = t / l.columns;
 							for (auto by = 0u; by < th / 4; by++)
 							{
-								const auto at = (static_cast<std::size_t>(row * (th / 4) + by) * blocks_across + column * (tw / 4)) * 16;
+								const auto at = (static_cast<std::size_t>(row * (th / 4) + by) * blocks_across + column * (tw / 4)) * block_bytes;
 								std::memcpy(&blocks[at], &src[by * row_bytes], row_bytes);
 							}
 						}
@@ -2277,8 +2286,8 @@ namespace zonetool::t7
 						DirectX::Image src{};
 						src.width = pw;
 						src.height = ph;
-						src.format = DXGI_FORMAT_BC7_UNORM;
-						src.rowPitch = static_cast<std::size_t>((pw + 3) / 4) * 16;
+						src.format = format;
+						src.rowPitch = static_cast<std::size_t>((pw + 3) / 4) * block_bytes;
 						src.slicePitch = src.rowPitch * ((ph + 3) / 4);
 						src.pixels = out.back().data();
 						DirectX::ScratchImage decoded;
@@ -2314,7 +2323,7 @@ namespace zonetool::t7
 						}
 					}
 					rgba = std::move(half);
-					out.emplace_back(compress_level(rgba, atlas_w, atlas_h, DXGI_FORMAT_BC7_UNORM));
+					out.emplace_back(compress_level(rgba, atlas_w, atlas_h, format));
 				}
 				return out;
 			}
@@ -2327,8 +2336,15 @@ namespace zonetool::t7
 				const auto height = l.rows * l.tile_height;
 				claim_image(l.cs, l.cs, false);
 				claim_image(l.ng, l.cs, false);
-				return write_levels(l.cs, width, height, DXGI_FORMAT_BC7_UNORM, zonetool::iw7::TS_COLOR_SPECULAR_MAP, 0x2300, compose_atlas(a, a.cs))
+				auto bytes = write_levels(l.cs, width, height, DXGI_FORMAT_BC7_UNORM, zonetool::iw7::TS_COLOR_SPECULAR_MAP, 0x2300, compose_atlas(a, a.cs))
 					+ write_levels(l.ng, width, height, DXGI_FORMAT_BC7_UNORM, zonetool::iw7::TS_NORMAL_OCCLUSSION_GLOSS_MAP, 0x308, compose_atlas(a, a.ng));
+				if (!l.a.empty())
+				{
+					claim_image(l.a, l.cs, false);
+					bytes += write_levels(l.a, width, height, DXGI_FORMAT_BC4_UNORM, zonetool::iw7::TS_ALPHA_REVEAL_THICKNESS_MAP, 0x300,
+						compose_atlas(a, a.a, DXGI_FORMAT_BC4_UNORM));
+				}
+				return bytes;
 			}
 
 			// takes an atlas out of the table to write it (under atlas_mutex)
@@ -2338,14 +2354,17 @@ namespace zonetool::t7
 				done.layout = a.layout;
 				done.cs = std::move(a.cs);
 				done.ng = std::move(a.ng);
+				done.a = std::move(a.a);
 				a.cs.clear();
 				a.ng.clear();
+				a.a.clear();
 				a.written = true;
 				return done;
 			}
 
 			// a material's tile, block-compressed; the atlas is written once it has every tile. Returns the bytes written
-			std::size_t deposit_tile(const atlas_slot& slot, std::vector<std::vector<std::uint8_t>> cs_tile, std::vector<std::vector<std::uint8_t>> ng_tile)
+			std::size_t deposit_tile(const atlas_slot& slot, std::vector<std::vector<std::uint8_t>> cs_tile, std::vector<std::vector<std::uint8_t>> ng_tile,
+				std::vector<std::vector<std::uint8_t>> a_tile = {})
 			{
 				atlas_pending done;
 				{
@@ -2354,6 +2373,10 @@ namespace zonetool::t7
 					const auto t = slot.row * slot.columns + slot.column;
 					a.cs[t] = std::move(cs_tile);
 					a.ng[t] = std::move(ng_tile);
+					if (!slot.a.empty())
+					{
+						a.a[t] = std::move(a_tile);
+					}
 					if (++a.received < a.expected)
 					{
 						return 0;
@@ -2426,6 +2449,12 @@ namespace zonetool::t7
 				if (animated)
 				{
 					candidates.push_back(still);
+				}
+				// the culled sibling where no two-sided one is loaded (wc/lit_nocull: the face culling comes from the
+				// material's state flags, not the technique set)
+				if (auto culled = candidates.back(); erase_token(culled, "_nocull"))
+				{
+					candidates.push_back(culled);
 				}
 
 				for (const auto& candidate : candidates)
@@ -2679,7 +2708,7 @@ namespace zonetool::t7
 				}
 
 				const auto bo3 = bo3_template(material);
-				if (bo3.starts_with("lit_water_sim_flow") || bo3.starts_with("water_shore_flow"))
+				if (bo3.starts_with("lit_water_sim_flow") || bo3.starts_with("water_shore_flow") || bo3.starts_with("lit_transparent_water_flow"))
 				{
 					// BO3's water, converted without a bake (write_water): stock IW7's refractive water with scrolled normals on
 					// the world; on models, which IW7 has no such water for, its UV-animated lit water (stock
@@ -2735,9 +2764,11 @@ namespace zonetool::t7
 						lit = load_program(material, "lit", { nullptr, nullptr, true });
 						// BO3's additive emissive templates (decal_emissive): the lit technique adds its output and reads no
 						// texture but emissive maps, so what it adds is its emission: IW7's unlit add
+						// (decal_emissive_mask also masks, flickers and distorts its emission: emissiveMask, flickerLookupMap,
+						// distortionMap, none of them a lighting input)
 						const auto emission_only = !lit.textures.empty() && std::ranges::all_of(lit.textures, [](const texture_binding& t)
 						{
-							return t.name.starts_with("emissiveMap");
+							return t.name.starts_with("emissive") || t.name == "flickerLookupMap" || t.name == "distortionMap";
 						});
 						p.unlit_emissive = adds(lit.technique) && emission_only;
 					}
@@ -2866,7 +2897,14 @@ namespace zonetool::t7
 						}
 						else if (!emissive_map)
 						{
-							throw std::runtime_error("forward-lit material without an emissive map");
+							// any other opaque forward-lit template (glass_opaque, lit_vehicle_backlit, default): the surface from
+							// its lit technique's debug-override permutation, drawn as a standard opaque surface as hair is
+							mp = load_program(material, "lit", { nullptr, nullptr, false, true });
+							p.surface = true;
+							p.opaque_surface = true;
+							surface_alpha_test = lit.taint.discard_textures.any();
+							ZONETOOL_INFO("model material %s: BO3's forward-lit %s converted as a standard surface", describe_material(material).data(),
+								bo3_template(material).data());
 						}
 						else
 						{
@@ -3696,6 +3734,10 @@ namespace zonetool::t7
 
 				const auto c_name = clean_name(name);
 				const auto str = j.dump(4);
+				{
+					std::lock_guard _(json_mutex);
+					written_json[name] = str;
+				}
 				write_file("materials\\" + c_name + ".json", str.data(), str.size());
 
 				const auto state = "techsets\\state\\"s + donor.techset + "\\" + c_name;
@@ -3715,7 +3757,12 @@ namespace zonetool::t7
 				const auto slash = base.find_last_of('/');
 				if (slash != std::string::npos)
 				{
-					base = base.substr(slash + 1);
+					// a folder other than BO3's world one (wc/) or IW7's model one (mo/) stays: mc/x and wc/x are both world
+					// materials once models draw on world surfaces
+					const auto folder = base.substr(0, slash);
+					base = folder == "wc" || folder == "mo" ? base.substr(slash + 1) : folder + "_" + base.substr(slash + 1);
+					std::ranges::replace(base, '/', '_');
+					std::ranges::replace(base, '\\', '_');
 				}
 				return clean_name(base) + "_t7";
 			}
@@ -4586,23 +4633,106 @@ namespace zonetool::t7
 				atlas_members.clear();
 				atlases.clear();
 			}
+			{
+				std::lock_guard json(json_mutex);
+				written_json.clear();
+				atlas_written.clear();
+			}
 			std::lock_guard checked(gpu_programs_mutex);
 			gpu_programs.clear();
 		}
 
-		bool atlas_tile(const Material* material, const info& inf, std::uint32_t& width, std::uint32_t& height)
+		// BO3's backlit shading model: the gbuffer program writes 2/3 to RT2.w (an immediate); such a material is
+		// converted with its own absorption map, so it cannot share an atlas
+		bool writes_backlit(const Material* material)
 		{
-			if (!inf.model || inf.cls == surface_class::shadow_only || !inf.used_uv || inf.used_uv->empty())
+			try
 			{
+				const auto mp = load_program(material, "gbuffer");
+				for (const auto& ins : mp.program->instructions())
+				{
+					if (ins.operands.empty() || ins.operands[0].kind != shader_eval::operand_kind::output || ins.operands[0].index[0] != 2
+						|| !(ins.operands[0].mask & 8))
+					{
+						continue;
+					}
+					for (auto o = 1u; o < ins.operands.size(); o++)
+					{
+						const auto& op = ins.operands[o];
+						if (op.kind != shader_eval::operand_kind::immediate)
+						{
+							continue;
+						}
+						const auto component = op.component_count == 4 ? op.swizzle[3] : 0;
+						const auto value = std::bit_cast<float>(op.immediate[component]);
+						if (std::fabs(value - 2.0f / 3.0f) < 0.01f)
+						{
+							return true;
+						}
+					}
+				}
+			}
+			catch (const std::exception&)
+			{
+			}
+			return false;
+		}
+
+		bool atlas_tile(const Material* material, const info& inf, std::uint32_t& width, std::uint32_t& height, bool& alpha_tested,
+			std::string* why)
+		{
+			const auto no = [&](const char* reason)
+			{
+				if (why)
+				{
+					*why = reason;
+				}
 				return false;
+			};
+			// a model material, or a world one baked over its placed models' area only (world_material::set_world_usage)
+			if (inf.cls == surface_class::shadow_only)
+			{
+				return no("shadow only");
+			}
+			if (!inf.used_uv || inf.used_uv->empty())
+			{
+				return no("no texture coordinates known");
 			}
 			const auto& p = get_plan(material, inf);
-			// the plain gbuffer bake (cs + ng alone): no coverage, emissive, detail (its tiling follows the texture
-			// coordinates) or other layout
-			if (!p.supported || p.unlit_emissive || p.eye || p.multiply || p.water || p.surface || p.forward_emissive || p.decal
-				|| p.alpha_test || p.reveal || p.reveal_decal || p.detail || p.width > 2048 || p.height > 2048)
+			// the plain gbuffer bake (cs + ng, and an alpha test's coverage in the atlas's own BC4 layer): no other coverage,
+			// emissive, detail (its tiling follows the texture coordinates) or other layout
+			if (!p.supported)
 			{
-				return false;
+				return no("not converted");
+			}
+			if (p.unlit_emissive || p.forward_emissive)
+			{
+				return no("emissive");
+			}
+			if (p.eye || p.water || p.surface)
+			{
+				return no("eye, water or a forward surface");
+			}
+			if (p.multiply || p.decal || p.reveal || p.reveal_decal)
+			{
+				return no("decal, multiply or reveal");
+			}
+			if (p.detail)
+			{
+				return no("detail map");
+			}
+			if (p.width > 2048 || p.height > 2048)
+			{
+				return no("bake over 2048");
+			}
+			if (p.alpha_test && p.surface_coverage())
+			{
+				return no("alpha test with its own coverage");
+			}
+			alpha_tested = p.alpha_test;
+			if (writes_backlit(material))
+			{
+				return no("backlit");
 			}
 			// every surface inside the baked area (half a texel over at most: bilinear filtering's reach)
 			for (auto axis = 0; axis < 2; axis++)
@@ -4611,21 +4741,18 @@ namespace zonetool::t7
 				const auto slack = 0.5 * p.uv_span[axis] / texels;
 				if (inf.used_uv->min[axis] < p.uv_origin[axis] - slack || inf.used_uv->max[axis] > p.uv_origin[axis] + p.uv_span[axis] + slack)
 				{
-					return false;
+					return no("surfaces tile past the baked area");
 				}
 			}
-			// up to the next of 2^n and 1.5 x 2^n: few tile sizes, and a tile's first levels stay whole BC7 blocks
-			const auto round_up = [](const std::uint32_t size)
+			// square power-of-two tiles: a large map's bakes come in so many sizes that same-size groups stay small (the
+			// bake is made at the tile's size, so a member only gains texels)
+			auto side = 4u;
+			while (side < std::max(p.width, p.height))
 			{
-				auto step = 4u;
-				while (step < size && step + step / 2 < size)
-				{
-					step *= 2;
-				}
-				return step >= size ? step : step + step / 2;
-			};
-			width = round_up(p.width);
-			height = round_up(p.height);
+				side *= 2;
+			}
+			width = side;
+			height = side;
 			return true;
 		}
 
@@ -4638,13 +4765,14 @@ namespace zonetool::t7
 				p.height = slot.tile_height;
 			}
 			std::lock_guard _(atlas_mutex);
-			atlas_members[material] = slot;
+			atlas_members[{ material, inf.model }] = slot;
 			auto& a = atlases[slot.cs];
 			if (!a.expected)
 			{
 				a.layout = slot;
 				a.cs.resize(static_cast<std::size_t>(slot.columns) * slot.rows);
 				a.ng.resize(a.cs.size());
+				a.a.resize(slot.a.empty() ? 0 : a.cs.size());
 			}
 			a.expected++;
 		}
@@ -4668,6 +4796,28 @@ namespace zonetool::t7
 			{
 				total_image_bytes += write_atlas(a);
 			}
+		}
+
+		void share_atlas_materials()
+		{
+			std::lock_guard _(json_mutex);
+			std::map<std::string, std::vector<std::string>> by_json;
+			for (const auto& name : atlas_written)
+			{
+				by_json[written_json.at(name)].push_back(name);
+			}
+			auto shared = 0u, groups = 0u;
+			for (auto& [json, names] : by_json)
+			{
+				std::ranges::sort(names);
+				for (auto i = 1u; i < names.size(); i++)
+				{
+					converter::iw7::material::set_shared(names[i], names[0]);
+				}
+				shared += static_cast<unsigned int>(names.size());
+				groups++;
+			}
+			ZONETOOL_INFO("model materials: %u atlas members draw as %u shared materials", shared, groups);
 		}
 
 		void write_stock_material(const std::string& name, const std::string& techset,
@@ -5553,10 +5703,9 @@ namespace zonetool::t7
 			std::vector<std::pair<std::uint32_t, std::array<float, 4>>> constants;
 
 			std::optional<atlas_slot> slot;
-			if (inf.model)
 			{
 				std::lock_guard _(atlas_mutex);
-				const auto found = atlas_members.find(material);
+				const auto found = atlas_members.find({ material, inf.model });
 				if (found != atlas_members.end())
 				{
 					slot = found->second;
@@ -5566,10 +5715,22 @@ namespace zonetool::t7
 			const auto ng_name = slot ? slot->ng : base + (p.occlusion ? "_packed_nog" : "_packed_ng");
 			if (slot)
 			{
-				// (atlas_tile keeps decals out: the levels are packed as they are)
+				{
+					std::lock_guard _(json_mutex);
+					atlas_written.insert(name);
+				}
+				// (atlas_tile keeps decals out: the levels are packed as they are); an alpha-tested member's coverage
+				// goes in the atlas's BC4 layer
+				std::vector<std::vector<std::uint8_t>> a_levels;
+				if (!slot->a.empty())
+				{
+					preserve_coverage(coverage);
+					timed _(stage_ns.compress);
+					a_levels = compress_levels(coverage, DXGI_FORMAT_BC4_UNORM, gpu);
+				}
 				if (gpu_pack)
 				{
-					total_image_bytes += deposit_tile(*slot, std::move(cs_blocks), std::move(ng_blocks));
+					total_image_bytes += deposit_tile(*slot, std::move(cs_blocks), std::move(ng_blocks), std::move(a_levels));
 				}
 				else
 				{
@@ -5579,7 +5740,7 @@ namespace zonetool::t7
 						cs_levels = compress_levels(cs_image, DXGI_FORMAT_BC7_UNORM, gpu);
 						ng_levels = compress_levels(ng_image, DXGI_FORMAT_BC7_UNORM, gpu);
 					}
-					total_image_bytes += deposit_tile(*slot, std::move(cs_levels), std::move(ng_levels));
+					total_image_bytes += deposit_tile(*slot, std::move(cs_levels), std::move(ng_levels), std::move(a_levels));
 				}
 			}
 			else
@@ -5616,6 +5777,10 @@ namespace zonetool::t7
 					const auto ramp = std::clamp(read_float(mp, find_variable(mp, "alphaRevealRamp"), 0), 0.0f, 1.0f);
 					const auto fitted = soft * std::pow(0.5f, ramp - 0.5f);
 					constants.push_back({ r_hash_string("revealParams"), { fitted, 0.5f, 0.0f, 0.0f } });
+				}
+				else if (slot && !slot->a.empty())
+				{
+					images.push_back({ hash_spec_occlusion_map, slot->a });
 				}
 				else
 				{
@@ -5769,13 +5934,125 @@ namespace zonetool::t7
 
 			constants.push_back({ r_hash_string("colorTint"), { 1.0f, 1.0f, 1.0f, 1.0f } });
 
+			// BO3's backlit shading model (deferred_lighting: RT1 gloss >= 0.5 marks it): a light in front lights the
+			// albedo, a light behind (N.L < 0) passes through as |N.L| x the scatter colour BO3 keeps where F0 would be,
+			// and F0 is 0.04. IW7's opaque transmission techset (stock mo_l_sm_replace_i0c0s0o0n0am0t0p0_trans, its lit PS)
+			// adds saturate(-N.L) x saturate(subsurfaceParams.x) x absorptionScale x absorptionMap x albedo to the diffuse,
+			// so absorptionMap = scatter / albedo, its largest value in absorptionScale
+			const auto* write_donor = donor;
+			auto backlit_converted = false;
+			auto backlit_black = false;
+			if (backlit && inf.model && !p.decal && !p.surface && !p.forward_emissive && !p.alpha_test && !p.detail && !slot
+				&& (p.techset == "mo_l_sm_replace_i0c0s0o0n0p0" || p.techset == "mo_l_sm_replace_i0c0s0n0p0"))
+			{
+				if (const auto* trans = world_techset_donors::find("mo_l_sm_replace_i0c0s0o0n0am0t0p0_trans", inf.camera_region))
+				{
+					const auto w = p.width, h = p.height;
+					std::vector<float> ratio(static_cast<std::size_t>(w) * h * 3, 0.0f);
+					auto top_other = top;
+					top_other.parity_shift = 1;
+					for (const auto& t : tiles_of(w, h))
+					{
+						const auto same = eval.run(top, t);
+						std::vector<texel_out> other;
+						if (p.coloured_specular)
+						{
+							other = eval.run(top_other, t, 4);
+						}
+						const auto surf = decode_gbuffer(same, p.coloured_specular ? &other : nullptr, t, false);
+						for (auto ly = 0u; ly < t.height; ly++)
+						{
+							for (auto lx = 0u; lx < t.width; lx++)
+							{
+								const auto& sf = surf[static_cast<std::size_t>(ly) * t.width + lx];
+								if (std::fabs(sf.shading_model - 2.0f / 3.0f) >= 0.01f)
+								{
+									continue;
+								}
+								const auto i = static_cast<std::size_t>(t.y + ly) * w + t.x + lx;
+								for (auto c = 0u; c < 3; c++)
+								{
+									ratio[i * 3 + c] = std::max(sf.f0[c], 0.0f) / std::max(sf.albedo[c], 1.0f / 255.0f);
+								}
+							}
+						}
+					}
+					auto scale = 0.0f;
+					for (const auto v : ratio)
+					{
+						scale = std::max(scale, v);
+					}
+					backlit_black = !(scale > 0.0f);
+					if (scale > 0.0f)
+					{
+						image_levels a_image{ w, h };
+						std::vector<float> level = ratio;
+						auto lw = w, lh = h;
+						for (auto l = 0u; l < mip_count(w, h); l++)
+						{
+							std::vector<std::uint8_t> rgba(static_cast<std::size_t>(lw) * lh * 4, 255);
+							for (std::size_t i = 0; i < static_cast<std::size_t>(lw) * lh; i++)
+							{
+								for (auto c = 0u; c < 3; c++)
+								{
+									rgba[i * 4 + c] = to_byte(level[i * 3 + c] / scale);
+								}
+							}
+							a_image.rgba.emplace_back(std::move(rgba));
+							const auto nw = std::max(1u, lw / 2), nh = std::max(1u, lh / 2);
+							std::vector<float> next(static_cast<std::size_t>(nw) * nh * 3, 0.0f);
+							for (auto y = 0u; y < nh; y++)
+							{
+								for (auto x = 0u; x < nw; x++)
+								{
+									for (auto c = 0u; c < 3; c++)
+									{
+										auto sum = 0.0f;
+										for (auto oy = 0u; oy < 2; oy++)
+										{
+											for (auto ox = 0u; ox < 2; ox++)
+											{
+												const auto sx = std::min(x * 2 + ox, lw - 1), sy = std::min(y * 2 + oy, lh - 1);
+												sum += level[(static_cast<std::size_t>(sy) * lw + sx) * 3 + c];
+											}
+										}
+										next[(static_cast<std::size_t>(y) * nw + x) * 3 + c] = sum * 0.25f;
+									}
+								}
+							}
+							level = std::move(next);
+							lw = nw;
+							lh = nh;
+						}
+						const auto a_name = base + "_absorption";
+						claim_image(a_name, name, false);
+						total_image_bytes += write_image(a_name, a_image, DXGI_FORMAT_BC7_UNORM, zonetool::iw7::TS_COLOR_MAP, 0x340, gpu);
+						images.push_back({ 3775099421u, a_name });
+						constants.push_back({ 802131161u, { scale, scale, scale, 1.0f } });
+						constants.push_back({ 1386740621u, { 1.0f, 0.0f, 1.0f, 1.0f } });
+						write_donor = trans;
+						backlit_converted = true;
+					}
+				}
+			}
+
 			// the state BO3 drew the material with: its own lit technique for a forward material
-			write_material_json(name, *donor, inf, iw7_state_flags(*donor, p.forward_emissive ? lit.technique : mp.technique),
+			write_material_json(name, *write_donor, inf, iw7_state_flags(*write_donor, p.forward_emissive ? lit.technique : mp.technique),
 				constants, images);
 
-			if (backlit)
+			if (backlit_converted)
 			{
-				ZONETOOL_INFO("%s material %s: BO3 backlit scattering has no IW7 packed equivalent, converted as a standard surface",
+				ZONETOOL_INFO("%s material %s: BO3 backlit scattering as IW7's opaque transmission (%s)", inf.model ? "model" : "world",
+					name.data(), write_donor->techset);
+			}
+			else if (backlit_black)
+			{
+				ZONETOOL_INFO("%s material %s: BO3 backlit with a black scatter colour (nothing passes through), a standard surface",
+					inf.model ? "model" : "world", name.data());
+			}
+			else if (backlit)
+			{
+				ZONETOOL_INFO("%s material %s: BO3 backlit scattering kept as a standard surface (no IW7 transmission techset for its layout)",
 					inf.model ? "model" : "world", name.data());
 			}
 			if (!p.surface_sources.empty())

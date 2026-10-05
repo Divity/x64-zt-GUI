@@ -378,6 +378,13 @@ namespace zonetool::t7
 				return model_material_name(name);
 			}
 
+			std::unordered_map<std::string, std::string> shared_names;
+
+			void set_shared(const std::string& name, const std::string& shared)
+			{
+				shared_names[name] = shared;
+			}
+
 			std::string model_material_name(const std::string& bo3_name)
 			{
 				std::string folder;
@@ -394,7 +401,9 @@ namespace zonetool::t7
 					}
 				}
 				const auto keep = !folder.empty() && folder != "mc";
-				return "mo/"s + (keep ? folder + "_" : ""s) + get_material_name(bo3_name);
+				const auto name = "mo/"s + (keep ? folder + "_" : ""s) + get_material_name(bo3_name);
+				const auto found = shared_names.find(name);
+				return found != shared_names.end() ? found->second : name;
 			}
 
 			void dump(Material* asset)

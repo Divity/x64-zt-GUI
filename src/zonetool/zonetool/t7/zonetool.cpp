@@ -290,6 +290,175 @@ namespace zonetool::t7
 		{
 			// dump assets
 			//DUMP_ASSET(ASSET_TYPE_XMODEL, xmodel, XModel);
+			if (asset->type == ASSET_TYPE_IMAGE)
+			{
+				// an image named with ZT_UI_IMAGE_PREFIX as decoded pixels: ui_images/<image>.raw, a { width, height, depth,
+				// faces, levels, DXGI format } u32 header then the pixels (the map's own HUD art, rebuilt in IW7 LUI)
+				const auto* image = reinterpret_cast<const GfxImage*>(asset->header.data);
+				const auto* prefix = std::getenv("ZT_UI_IMAGE_PREFIX");
+				converter::iw7::gfximage::image_pixels pixels;
+				if (image && image->name && prefix && !std::strncmp(image->name, prefix, std::strlen(prefix))
+					&& converter::iw7::gfximage::get_pixels(image, pixels))
+				{
+					std::string out(24, '\0');
+					const std::uint32_t header[6] = { pixels.width, pixels.height, pixels.depth, pixels.faces, pixels.levels,
+						static_cast<std::uint32_t>(pixels.format) };
+					std::memcpy(out.data(), header, sizeof(header));
+					out.append(reinterpret_cast<const char*>(pixels.data.data()), pixels.data.size());
+					std::string file_name = utils::string::va("ui_images/%s.raw", image->name);
+					for (auto& c : file_name)
+					{
+						if (c == '*' || c == '#')
+						{
+							c = '_';
+						}
+					}
+					filesystem::file file(file_name);
+					file.open("wb");
+					file.write(out);
+					file.close();
+				}
+			}
+			if (asset->type == ASSET_TYPE_SOUND)
+			{
+				// SndBank: aliasCount +0x20, alias lists +0x28 (0x28 each: name, id, aliases +0x10, count +0x18); an alias is
+				// 0xD8 (name +0, assetId +0x38 = SND_HashName(file), file +0x40); written as list,alias,file,assetId,raw hex
+				const auto* bank = reinterpret_cast<const std::uint8_t*>(asset->header.data);
+				const auto list_count = *reinterpret_cast<const std::uint32_t*>(bank + 0x20);
+				const auto* lists = *reinterpret_cast<const std::uint8_t* const*>(bank + 0x28);
+				std::string csv;
+				for (std::uint32_t l = 0; l < list_count && lists; l++)
+				{
+					const auto* list = lists + 0x28 * l;
+					const auto* list_name = *reinterpret_cast<const char* const*>(list);
+					const auto* aliases = *reinterpret_cast<const std::uint8_t* const*>(list + 0x10);
+					const auto count = *reinterpret_cast<const std::uint32_t*>(list + 0x18);
+					for (std::uint32_t a = 0; a < count && aliases; a++)
+					{
+						const auto* alias = aliases + 0xD8 * a;
+						const auto* name = *reinterpret_cast<const char* const*>(alias);
+						const auto* file = *reinterpret_cast<const char* const*>(alias + 0x40);
+						const auto id = *reinterpret_cast<const std::uint32_t*>(alias + 0x38);
+						csv += utils::string::va("%s,%s,%s,%08X,", list_name ? list_name : "", name ? name : "", file ? file : "", id);
+						for (auto b = 0; b < 0xD8; b++)
+						{
+							csv += utils::string::va("%02X", alias[b]);
+						}
+						csv += "\n";
+					}
+				}
+				filesystem::file file(utils::string::va("sound_aliases/%s.csv", get_asset_name(asset)));
+				file.open("wb");
+				file.write(csv);
+				file.close();
+			}
+			if (asset->type == ASSET_TYPE_SOUND && std::getenv("ZT_SOUND_PROBE"))
+			{
+				const auto readable = [](const void* p, std::size_t n)
+				{
+					MEMORY_BASIC_INFORMATION mbi{};
+					if (!p || !VirtualQuery(p, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)))
+					{
+						return false;
+					}
+					return reinterpret_cast<std::uintptr_t>(p) + n <= reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+				};
+				std::string out;
+				const auto block = [&](const std::uint8_t* at, std::size_t n, int depth, auto&& self) -> void
+				{
+					if (!readable(at, n))
+					{
+						return;
+					}
+					out += utils::string::va("@%p %zu %d\n", at, n, depth);
+					out.append(reinterpret_cast<const char*>(at), n);
+					out += "\n";
+					if (depth >= 2)
+					{
+						return;
+					}
+					for (std::size_t o = 0; o + 8 <= n; o += 8)
+					{
+						const auto* p = *reinterpret_cast<const std::uint8_t* const*>(at + o);
+						if (p != at && readable(p, 0x400))
+						{
+							self(p, 0x400, depth + 1, self);
+						}
+					}
+				};
+				block(reinterpret_cast<const std::uint8_t*>(asset->header.data), 0x200, 0, block);
+				filesystem::file file(utils::string::va("sound_probe/%s.bin", get_asset_name(asset)));
+				file.open("wb");
+				file.write(out);
+				file.close();
+			}
+			if (asset->type == ASSET_TYPE_RAWFILE)
+			{
+				// written raw: { name, len +8, buffer +16 }
+				const auto* raw = reinterpret_cast<const std::uint8_t*>(asset->header.data);
+				const auto* name = *reinterpret_cast<const char* const*>(raw);
+				const auto len = *reinterpret_cast<const std::uint32_t*>(raw + 8);
+				const auto* buffer = *reinterpret_cast<const std::uint8_t* const*>(raw + 16);
+				if (name && buffer && len)
+				{
+					filesystem::file file(name);
+					file.open("wb");
+					file.write(buffer, len, 1);
+					file.close();
+				}
+			}
+			if (asset->type == ASSET_TYPE_STRINGTABLE)
+			{
+				// written as its csv: { name, columns +8, rows +12, cells +16 }, a cell { string, hash } of 16 bytes (measured on
+				// zm_waterparkfinale's weapon table: 20 x 57, header row first)
+				const auto* raw = reinterpret_cast<const std::uint8_t*>(asset->header.data);
+				const auto* name = *reinterpret_cast<const char* const*>(raw);
+				const auto columns = *reinterpret_cast<const int*>(raw + 8);
+				const auto rows = *reinterpret_cast<const int*>(raw + 12);
+				const auto* cells = *reinterpret_cast<const std::uint8_t* const*>(raw + 16);
+				std::string csv;
+				for (auto r = 0; r < rows && cells; r++)
+				{
+					for (auto c = 0; c < columns; c++)
+					{
+						const auto* s = *reinterpret_cast<const char* const*>(cells + 16 * (r * columns + c));
+						csv += (c ? "," : "") + std::string(s ? s : "");
+					}
+					csv += "\n";
+				}
+				filesystem::file file(name);
+				file.open("wb");
+				file.write(csv);
+				file.close();
+			}
+			if (asset->type == ASSET_TYPE_SCRIPTPARSETREE)
+			{
+				// compiled script, written raw: { name, len, buffer } or { name, buffer, len }
+				const auto* raw = reinterpret_cast<const std::uint8_t*>(asset->header.data);
+				const auto* name = *reinterpret_cast<const char* const*>(raw);
+				const std::uint8_t* buffer = nullptr;
+				std::size_t len = 0;
+				for (const auto [len_at, ptr_at] : {std::pair{8, 16}, std::pair{16, 8}})
+				{
+					const auto* candidate = *reinterpret_cast<const std::uint8_t* const*>(raw + ptr_at);
+					const auto size = *reinterpret_cast<const std::uint32_t*>(raw + len_at);
+					if (candidate && size > 8 && !std::memcmp(candidate, "\x80GSC", 4))
+					{
+						buffer = candidate;
+						len = size;
+						break;
+					}
+				}
+				if (!buffer)
+				{
+					ZONETOOL_WARNING("scriptparsetree \"%s\": no GSC buffer found", name);
+					return;
+				}
+				filesystem::file file(std::string(name) + "c");
+				file.open("wb");
+				file.write(buffer, len, 1);
+				file.close();
+			}
 		}
 		catch (const std::exception& e)
 		{

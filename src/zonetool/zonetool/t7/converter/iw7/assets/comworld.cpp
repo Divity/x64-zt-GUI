@@ -67,10 +67,21 @@ namespace zonetool::t7
 				};
 				std::vector<flicker_light> flicker_lights;
 
+				// BO3 script lights switched by an exploder (ZT_LIGHT_EXPLODERS_ON): IW7 scriptable lights with a light entity
+				// named after the exploder
+				struct script_light
+				{
+					unsigned int index;
+					float origin[3];
+					bool spot;
+					std::string exploder;
+				};
+				std::vector<script_light> script_lights;
+
 				constexpr auto pi = 3.14159265358979f;
 
 				// The lighting state the converted map is frozen in (see the header comment).
-				constexpr auto start_lighting_state = 0u;
+				const auto start_lighting_state = map::lighting_state();
 
 				// BO3's own threshold for a light that emits nothing (light cull 0x141CBF070).
 				constexpr auto min_color_length_sq = 0.001f;
@@ -331,6 +342,11 @@ namespace zonetool::t7
 						return nullptr;
 					}
 
+					const auto main = map::main_sun_volume(world);
+					if (world->sunVolumes[main].sun.lightStateMask & (1u << start_lighting_state))
+					{
+						return &world->sunVolumes[main].sun.settings[start_lighting_state];
+					}
 					for (auto i = 0u; i < world->sunVolumeCount; i++)
 					{
 						const auto& volume = world->sunVolumes[i];
@@ -387,10 +403,10 @@ namespace zonetool::t7
 						const auto& c = asset->primaryLights[i].config;
 						ZONETOOL_INFO("light trace %u: type %d guid %08x origin %.2f %.2f %.2f colour %.4f %.4f %.4f dAtt %.3f cut %.2f %.2f "
 							"edge %.3f %.3f state %x exploder %d fade %.3f def \"%s\" cookie angle %.3f rot %.3f scale %.3f %.3f scroll %.3f %.3f "
-							"offset %.3f %.3f cookieIndex %d", i, c.type, c.guid, c.origin[0], c.origin[1], c.origin[2], c._color[0], c._color[1],
+							"offset %.3f %.3f cookieIndex %d cull %.1f %.1f %.1f - %.1f %.1f %.1f cullRadius %.1f wldDir %.3f %.3f %.3f cos %.4f final %.4f ortho %.2f vol %d volCookies %d volSamples %u volScale %.3f", i, c.type, c.guid, c.origin[0], c.origin[1], c.origin[2], c._color[0], c._color[1],
 							c._color[2], c.dAttenuation, c.cut_on, c.cut_off, c.near_edge, c.far_edge, c.lightStateMask, c.exploderDisabled,
 							c.exploderFade, c.lightDefName, c.cookieAngle, c.cookieRotation, c.cookieScale[0], c.cookieScale[1], c.cookieScroll[0],
-							c.cookieScroll[1], c.cookieOffset[0], c.cookieOffset[1], asset->primaryLights[i].cookieIndex);
+							c.cookieScroll[1], c.cookieOffset[0], c.cookieOffset[1], asset->primaryLights[i].cookieIndex, c.wldCullMin[0], c.wldCullMin[1], c.wldCullMin[2], c.wldCullMax[0], c.wldCullMax[1], c.wldCullMax[2], c.cullRadius, c.wldDir[0], c.wldDir[1], c.wldDir[2], c.cosHalfFov, c.finalCosHalfFov, c.orthoDist, c.volumetric, c.volumetricCookies, c.volumetricSampleCount, c.volumetricIntensityScale);
 					}
 					for (auto i = 0u; i < asset->lightExploderCount; i++)
 					{
@@ -402,11 +418,21 @@ namespace zonetool::t7
 								d.primaryLightIndex, d.delayOn, d.delayOff, d.fadeIn, d.fadeOut, d.reversed);
 						}
 					}
+					for (auto i = 0u; i < asset->probeExploderCount; i++)
+					{
+						const auto& e = asset->probeExploders[i];
+						for (auto t = 0; t < e.triggerCount; t++)
+						{
+							const auto& d = e.triggerData[t];
+							ZONETOOL_INFO("light trace probe exploder %08x: probe %d volume %d on %d off %d in %d out %d reversed %d", e.nameHash,
+								d.probeID, d.volumeID, d.delayOn, d.delayOff, d.fadeIn, d.fadeOut, d.reversed);
+						}
+					}
 				}
 
 				// lights a level script's exploder switches on for good (ZT_LIGHT_EXPLODERS_ON, comma separated names): BO3 keeps
 				// them out of every lighting state (mask 0) and draws them once the exploder plays; nameHash is the djb2 hash of the name
-				std::unordered_set<unsigned int> exploder_lit;
+				std::unordered_map<unsigned int, std::string> exploder_lit;
 				if (const auto* names = std::getenv("ZT_LIGHT_EXPLODERS_ON"))
 				{
 					for (const auto& name : utils::string::split(names, ','))
@@ -428,7 +454,7 @@ namespace zonetool::t7
 							{
 								if (!e.triggerData[t].reversed)
 								{
-									exploder_lit.insert(e.triggerData[t].primaryLightIndex);
+									exploder_lit.emplace(e.triggerData[t].primaryLightIndex, name);
 									found++;
 								}
 							}
@@ -482,8 +508,11 @@ namespace zonetool::t7
 				{
 					return std::string_view(asset->primaryLights[i].config.lightDefName).starts_with("cookie_flicker");
 				};
-				std::stable_partition(kept.begin(), kept.end(), [&](const unsigned int i) { return !flickers(i); });
-				const auto first_flicker = static_cast<unsigned int>(std::ranges::count_if(kept, [&](const unsigned int i) { return !flickers(i); }));
+				// order: static lights, exploder script lights, flickering lights; the last two are IW7's scriptable range
+				const auto rank = [&](const unsigned int i) { return flickers(i) ? 2 : exploder_lit.contains(i) ? 1 : 0; };
+				std::ranges::stable_sort(kept, [&](const unsigned int a, const unsigned int b) { return rank(a) < rank(b); });
+				const auto first_script = static_cast<unsigned int>(std::ranges::count_if(kept, [&](const unsigned int i) { return rank(i) == 0; }));
+				const auto first_flicker = static_cast<unsigned int>(std::ranges::count_if(kept, [&](const unsigned int i) { return rank(i) < 2; }));
 
 				// 0 = none, 1 = sun, then the local lights
 				new_asset->primaryLightCount = static_cast<unsigned int>(kept.size()) + 2;
@@ -504,9 +533,10 @@ namespace zonetool::t7
 
 				// IW7 holds 64 spot shadow maps (0x140E1C620: past its cache, a shadowed light waits for one of the 8
 				// shadow updates a frame, and is not drawn until it gets one). BO3 has no such budget, so wherever more than
-				// 64 shadowed lights share a neighbourhood, the least important keep their light without a shadow.
+				// 24 shadowed lights share a neighbourhood, the least important keep their light without a shadow (64, the
+				// cache's size, left Water Park 317 shadowed lights: their shadow maps redrawn as zombies move cost frames).
 				{
-					constexpr auto shadow_slots = 64u;
+					constexpr auto shadow_slots = 24u;
 					constexpr auto neighbourhood = 2048.0f; // a sightline's reach
 					std::vector<zonetool::iw7::ComPrimaryLight*> shadowed;
 					for (auto k = 0u; k < kept.size(); k++)
@@ -555,8 +585,25 @@ namespace zonetool::t7
 					new_asset->primaryLightEnvs[i].primaryLightIndices[0] = static_cast<unsigned short>(i);
 				}
 
-				new_asset->scriptablePrimaryLightCount = static_cast<unsigned int>(kept.size()) - first_flicker;
-				new_asset->firstScriptablePrimaryLight = first_flicker + 2;
+				new_asset->scriptablePrimaryLightCount = static_cast<unsigned int>(kept.size()) - first_script;
+				new_asset->firstScriptablePrimaryLight = first_script + 2;
+
+				script_lights.clear();
+				for (auto k = first_script; k < first_flicker; k++)
+				{
+					const auto& dst = new_asset->primaryLights[k + 2];
+					script_light l{};
+					l.index = k + 2;
+					std::memcpy(l.origin, dst.origin, sizeof(l.origin));
+					l.spot = dst.type == zonetool::iw7::GFX_LIGHT_TYPE_SPOT;
+					l.exploder = exploder_lit.at(kept[k]);
+					script_lights.push_back(l);
+				}
+				if (!script_lights.empty())
+				{
+					ZONETOOL_INFO("comworld: %zu exploder script lights scriptable from primary light %u", script_lights.size(),
+						new_asset->firstScriptablePrimaryLight);
+				}
 
 				// the flickering lights for the level script, and their entities
 				flicker_lights.clear();
@@ -611,13 +658,23 @@ namespace zonetool::t7
 
 			void export_flicker(const GfxWorld* world)
 			{
+				// the light entities: "pl#" (key ID 1) ties each to its scriptable primary light (0x1404003E0)
+				std::vector<map_entities::entity> ents;
+				for (const auto& l : script_lights)
+				{
+					map_entities::entity e{};
+					e.set("classname", l.spot ? "light_spot" : "light_omni");
+					e.set("origin", utils::string::va("%g %g %g", l.origin[0], l.origin[1], l.origin[2]));
+					e.set("targetname", l.exploder);
+					e.keys.push_back({ "1", std::to_string(l.index), false });
+					ents.push_back(std::move(e));
+				}
 				if (flicker_lights.empty())
 				{
+					map_entities::set_light_entities(std::move(ents));
 					return;
 				}
 
-				// the light entities: "pl#" (key ID 1) ties each to its scriptable primary light (0x1404003E0)
-				std::vector<map_entities::entity> ents;
 				for (const auto& f : flicker_lights)
 				{
 					map_entities::entity e{};

@@ -132,7 +132,16 @@ namespace zonetool::t7
 
 			// Scans every material the world's surfaces use. Decal sort keys depend on which BO3
 			// decal layers the map uses, so this has to run before get().
-			void prepare(const GfxWorld* world);
+			void prepare(const GfxWorld* world, const std::vector<const Material*>& world_props = {});
+
+			// the texture coordinates the world surfaces of placed models use, for a material no BO3 world surface uses: its
+			// world bake covers that area (a composite that repeats after no whole number of units bakes only there).
+			// After prepare(), before get() classifies the material
+			void set_world_usage(const Material* material, const uv_bounds& uv);
+
+			// Classifies the materials (after set_world_usage) and puts those an atlas can hold in shared atlases (t7_watlas_<n>),
+			// moving their texture areas; before the GfxWorld reads them (apply_uv_periods)
+			void plan_world_atlases(const std::vector<const Material*>& materials);
 
 			const info& get(const Material* material);
 
@@ -140,9 +149,28 @@ namespace zonetool::t7
 			// Its decal sort key is only known once prepare() has seen the world's decal layers.
 			const info& get_model(const Material* material);
 
+			// where IW7 sorts a model material among the static models' (0x140E133F0 sorts by sort key, technique, then name),
+			// as its classification and names give it, after its camera region (each region draws from its own lists);
+			// classifies without recording (dump_models classifies with usage)
+			std::tuple<unsigned char, unsigned char, std::string, std::string> model_draw_order(const Material* material);
+
 			// Whether a model surface of this BO3 material blocks the sun: it casts shadows and is opaque or shadow-only,
 			// not alpha tested. Records nothing (get_model's classification decides what dump_models bakes).
 			bool model_blocks_sun(const Material* material);
+
+			// Whether a model material can draw on a static world surface with a world techset: not skin or eye (IW7's sss
+			// techsets are model techsets). A decal's layer must reach prepare(). Records nothing.
+			bool world_drawable(const Material* material);
+
+			// the atlas (an index) each model material that dump_models would put in one joins, classified with `used` without
+			// recording: an atlas's members draw as one material
+			std::unordered_map<const Material*, unsigned int> atlas_groups(const std::vector<const Material*>& materials,
+				const std::unordered_map<const Material*, surface_usage>& used);
+
+			// per reason a model material stays out of the atlases (bake::atlas_tile), the materials; classifies with `used`
+			// without recording
+			std::map<std::string, std::vector<std::string>> atlas_report(const std::vector<const Material*>& materials,
+				const std::unordered_map<const Material*, surface_usage>& used);
 
 			// Converts every material the world's surfaces use: evaluates each BO3 material's own
 			// pixel shader to bake IW7 textures, and writes the IW7 material, its images and the

@@ -66,6 +66,9 @@ namespace zonetool::t7
 			// whether every surface of the mesh is rigid and has vertex data (what append_placed can place)
 			bool rigid_with_data(XModelMesh* asset);
 
+			// every surface's vertices in model space as convert writes them (position, normal; skinned ones at their bind pose)
+			void model_space_vertices(XModelMesh* asset, std::vector<std::array<float, 6>>& out);
+
 			// Appends surface `surface` of the mesh as a static model places it (world = origin + scale * (x axis[0] +
 			// y axis[1] + z axis[2])), moved by -center, with the texture coordinates and vertex colours convert() writes
 			// under `transform`; its faces index the vertices appended. False (nothing appended) when the surface is skinned,
@@ -74,6 +77,14 @@ namespace zonetool::t7
 			bool append_placed(XModelMesh* asset, unsigned int surface, const surface_transform& transform, const float* origin,
 				const float (*axis)[3], float scale, const float* center, std::vector<zonetool::iw7::GfxPackedVertex>& verts,
 				std::vector<zonetool::iw7::Face>& faces, float visibility = 1.0f);
+
+			// append_placed as world vertices: world space positions, BO3's texture coordinates as floats, BO3's vertex colour
+			// bytes, no lightmap coordinates; faces index from the first vertex of `verts`, turned for a mirrored placement
+			// (a negative determinant). False (nothing appended) as append_placed, or when `verts` would pass `max_vertices`.
+			// Triangles [first_triangle, first_triangle + triangle_count) of the surface, with the vertices they use.
+			bool append_placed_world(XModelMesh* asset, unsigned int surface, unsigned int first_triangle, unsigned int triangle_count,
+				const float* origin, const float (*axis)[3], float scale, std::vector<zonetool::iw7::GfxWorldVertex>& verts,
+				std::vector<unsigned short>& indices, std::size_t max_vertices);
 
 			// append_placed for a posed mesh (skinned or rigid): every vertex first goes through its BO3 bones' model space
 			// skinning matrices (row-major 3x4, `skin[bone]`), weighted, then the placement

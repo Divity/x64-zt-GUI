@@ -4,6 +4,7 @@
 
 #include "comworld.hpp"
 #include "world_sky.hpp"
+#include "static_model_clusters.hpp"
 #include "../convex.hpp"
 #include "../parallel.hpp"
 
@@ -484,6 +485,16 @@ namespace zonetool::t7
 			}
 		}
 
+		namespace
+		{
+			std::vector<char> sun_only_casters;
+		}
+
+		void set_sun_only_casters(std::vector<char> surfaces)
+		{
+			sun_only_casters = std::move(surfaces);
+		}
+
 		void build(zonetool::iw7::GfxWorld* world, utils::memory::allocator& allocator)
 		{
 			const auto* com = comworld::converted();
@@ -594,7 +605,8 @@ namespace zonetool::t7
 				}
 				for (auto s = opaque_begin; s < opaque_end; s++)
 				{
-					if ((world->dpvs.surfaces[s].flags & 1) && reaches(l, world->dpvs.surfacesBounds[s].bounds))
+					if ((world->dpvs.surfaces[s].flags & 1) && !(s < sun_only_casters.size() && sun_only_casters[s])
+						&& reaches(l, world->dpvs.surfacesBounds[s].bounds))
 					{
 						caster_surfaces[i].push_back(s);
 					}
@@ -608,6 +620,40 @@ namespace zonetool::t7
 					}
 				}
 			});
+			// ZT_LIGHT_CASTERS="x y z": every shadow caster of the light at that origin (surface bounds and material, static
+			// model bounds), then exit
+			if (const auto* at = std::getenv("ZT_LIGHT_CASTERS"))
+			{
+				float p[3]{};
+				std::sscanf(at, "%f %f %f", &p[0], &p[1], &p[2]);
+				for (auto i = 0u; i < light_count; i++)
+				{
+					const auto& src = com->primaryLights[i];
+					const float d[3] = { src.origin[0] - p[0], src.origin[1] - p[1], src.origin[2] - p[2] };
+					if (dot(d, d) > 4.0f)
+					{
+						continue;
+					}
+					ZONETOOL_INFO("casters of light %u: %zu surfaces, %zu models, shadow %d dynamic %d", i, caster_surfaces[i].size(),
+						caster_models[i].size(), src.canUseShadowMap, src.needsDynamicShadows);
+					for (const auto s : caster_surfaces[i])
+					{
+						const auto& b = world->dpvs.surfacesBounds[s].bounds;
+						const auto* m = world->dpvs.surfaces[s].material;
+						ZONETOOL_INFO("caster surface %u: mid %.1f %.1f %.1f half %.1f %.1f %.1f %s", s, b.midPoint[0], b.midPoint[1], b.midPoint[2],
+							b.halfSize[0], b.halfSize[1], b.halfSize[2], m && m->name ? m->name : "?");
+					}
+					for (const auto m : caster_models[i])
+					{
+						const auto& b = world->dpvs.smodelInsts[m].bounds;
+						ZONETOOL_INFO("caster model %u: mid %.1f %.1f %.1f half %.1f %.1f %.1f", m, b.midPoint[0], b.midPoint[1], b.midPoint[2],
+							b.halfSize[0], b.halfSize[1], b.halfSize[2]);
+					}
+				}
+				std::fflush(stdout);
+				std::_Exit(0);
+			}
+
 			std::size_t caster_total = 0;
 			for (auto i = 0u; i < light_count; i++)
 			{
@@ -647,16 +693,8 @@ namespace zonetool::t7
 			// ---- light lists -----------------------------------------------------------------------------------
 			std::vector<unsigned short> lists{ 0 };
 			std::map<std::vector<unsigned short>, unsigned int> interned;
-			const auto list_of = [&](const zonetool::iw7::Bounds& bounds) -> unsigned int
+			const auto intern = [&](std::vector<unsigned short> hits) -> unsigned int
 			{
-				std::vector<unsigned short> hits;
-				for (auto i = 0u; i < light_count; i++)
-				{
-					if (lights[i].local && reaches(lights[i], bounds))
-					{
-						hits.push_back(static_cast<unsigned short>(i));
-					}
-				}
 				if (hits.empty())
 				{
 					return 0;
@@ -672,18 +710,120 @@ namespace zonetool::t7
 				interned.emplace(std::move(hits), offset);
 				return offset;
 			};
+			const auto hits_of = [&](const zonetool::iw7::Bounds& bounds, std::vector<unsigned short>& hits)
+			{
+				for (auto i = 0u; i < light_count; i++)
+				{
+					if (lights[i].local && reaches(lights[i], bounds))
+					{
+						hits.push_back(static_cast<unsigned short>(i));
+					}
+				}
+			};
+			// a merged static model (static_model_clusters): the lights reaching one of its members, not its whole box
+			std::unordered_map<unsigned int, const static_model_clusters::cluster*> cluster_at;
+			{
+				const auto& plan = static_model_clusters::current();
+				for (const auto& c : plan.clusters)
+				{
+					if (!c.members.empty() && c.members.front() < plan.iw7_index.size())
+					{
+						cluster_at[plan.iw7_index[c.members.front()]] = &c;
+					}
+				}
+			}
+			const auto cluster_hits = [&](const static_model_clusters::cluster& c)
+			{
+				std::vector<unsigned short> hits;
+				for (const auto& mb : c.member_bounds)
+				{
+					zonetool::iw7::Bounds b{};
+					for (auto k = 0; k < 3; k++)
+					{
+						b.midPoint[k] = (mb[k] + mb[k + 3]) * 0.5f;
+						b.halfSize[k] = (mb[k + 3] - mb[k]) * 0.5f;
+					}
+					hits_of(b, hits);
+				}
+				std::ranges::sort(hits);
+				hits.erase(std::unique(hits.begin(), hits.end()), hits.end());
+				return hits;
+			};
 			const auto static_count = world->dpvs.staticSurfaceCount;
 			std::vector<unsigned int> surface_offsets(static_count), model_offsets(world->dpvs.smodelCount);
 			auto longest = 0u;
 			// the sky box spans the world: lights never light it (stock skies have a short list)
 			const auto sky = world_sky::surfaces(world);
-			for (auto s = 0u; s < static_count; s++)
+			// the static surfaces and the static models, shortest list first: while the 16-bit offsets have room each gets its
+			// own list, past that the shortest stored list holding all its lights (a light that does not reach it adds nothing
+			// to it; the list of every local light is stored first so one always exists)
+			std::vector<std::vector<unsigned short>> surface_hits(static_count);
+			parallel_for(static_count, [&](const std::uint32_t s, std::uint32_t)
 			{
-				surface_offsets[s] = sky[s] ? 0 : list_of(world->dpvs.surfacesBounds[s].bounds);
+				if (!sky[s])
+				{
+					hits_of(world->dpvs.surfacesBounds[s].bounds, surface_hits[s]);
+				}
+			});
+			std::vector<std::vector<unsigned short>> model_hits(world->dpvs.smodelCount);
+			parallel_for(world->dpvs.smodelCount, [&](const std::uint32_t m, std::uint32_t)
+			{
+				const auto c = cluster_at.find(m);
+				if (c != cluster_at.end())
+				{
+					model_hits[m] = cluster_hits(*c->second);
+				}
+				else
+				{
+					hits_of(world->dpvs.smodelInsts[m].bounds, model_hits[m]);
+				}
+			});
+			std::vector<unsigned short> every_light;
+			for (auto i = 0u; i < light_count; i++)
+			{
+				if (lights[i].local)
+				{
+					every_light.push_back(static_cast<unsigned short>(i));
+				}
 			}
-			for (auto m = 0u; m < world->dpvs.smodelCount; m++)
+			intern(every_light);
+			// entries below static_count: surfaces; the rest: static models
+			const auto hits_at = [&](const unsigned int k) -> std::vector<unsigned short>&
 			{
-				model_offsets[m] = list_of(world->dpvs.smodelInsts[m].bounds);
+				return k < static_count ? surface_hits[k] : model_hits[k - static_count];
+			};
+			const auto offset_at = [&](const unsigned int k) -> unsigned int&
+			{
+				return k < static_count ? surface_offsets[k] : model_offsets[k - static_count];
+			};
+			std::vector<unsigned int> order(static_count + world->dpvs.smodelCount);
+			std::iota(order.begin(), order.end(), 0u);
+			std::ranges::stable_sort(order, [&](const unsigned int a, const unsigned int b) { return hits_at(a).size() < hits_at(b).size(); });
+			auto shared = 0u, shared_surfaces = 0u;
+			for (const auto m : order)
+			{
+				auto& hits = hits_at(m);
+				if (hits.empty() || interned.contains(hits) || lists.size() + hits.size() + 1 <= 0xFFFF)
+				{
+					offset_at(m) = intern(std::move(hits));
+					continue;
+				}
+				const std::vector<unsigned short>* best = nullptr;
+				for (const auto& [list, offset] : interned)
+				{
+					if ((!best || list.size() < best->size()) && list.size() >= hits.size()
+						&& std::ranges::includes(list, hits))
+					{
+						best = &list;
+					}
+				}
+				offset_at(m) = interned.at(*best);
+				(m < static_count ? shared_surfaces : shared)++;
+			}
+			if (shared || shared_surfaces)
+			{
+				ZONETOOL_INFO("world lights: %u static surfaces and %u static models share a longer light list holding all their lights "
+					"(16-bit list offsets)", shared_surfaces, shared);
 			}
 			for (const auto& [list, offset] : interned)
 			{
@@ -691,7 +831,13 @@ namespace zonetool::t7
 			}
 			if (lists.size() > 0xFFFF)
 			{
-				ZONETOOL_FATAL("world lights: %zu light list entries do not fit 16-bit offsets", lists.size());
+				std::size_t models_longest = 0;
+				for (auto m = 0u; m < world->dpvs.smodelCount; m++)
+				{
+					models_longest = std::max<std::size_t>(models_longest, model_offsets[m] ? lists[model_offsets[m]] : 0);
+				}
+				ZONETOOL_FATAL("world lights: %zu light list entries do not fit 16-bit offsets (longest list %u lights, a static model's %zu; "
+					"%zu lists)", lists.size(), longest, models_longest, interned.size());
 			}
 			for (auto s = 0u; s < static_count; s++)
 			{

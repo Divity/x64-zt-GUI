@@ -4,6 +4,7 @@
 
 #include "zonetool/t7/converter/iw7/map_common.hpp"
 #include "comworld.hpp"
+#include "probe_lighting.hpp"
 #include "world_material.hpp"
 #include "world_lightmap.hpp"
 #include "reflection_probes.hpp"
@@ -12,9 +13,11 @@
 #include "world_sky.hpp"
 #include "gfximage.hpp"
 #include "xmodel.hpp"
+#include "xmodel_mesh.hpp"
 #include "static_model_clusters.hpp"
 #include "zonetool/t7/converter/iw7/map_entities.hpp"
 
+#include "zonetool/iw7/assets/gfximage.hpp"
 #include "zonetool/iw7/assets/gfxworld.hpp"
 #include "zonetool/t7/functions.hpp"
 #include "zonetool/iw7/assets/gfxworld_tr.hpp"
@@ -311,9 +314,20 @@ namespace zonetool::t7
 					}
 				}
 
-				// with_sky: the sky box surface takes the sorted slot after BO3's, in a leaf of its own under the root
+				// a leaf of the AABB tree under the root: sorted slots [begin, begin + count) within bounds
+				struct extra_leaf
+				{
+					unsigned int begin = 0;
+					unsigned int count = 0;
+					float mins[3]{};
+					float maxs[3]{};
+				};
+
+				// with_sky: the sky box surface takes the sorted slot after BO3's, in a leaf of its own under the root; `leaves`
+				// (the world groups' surfaces, static_model_clusters world_clusters) follow it
 				void convert_cells(const GfxWorld* asset, zonetool::iw7::GfxWorld* world,
-					zonetool::iw7::GfxWorldTransientZone* zone, const bool with_sky, utils::memory::allocator& allocator)
+					zonetool::iw7::GfxWorldTransientZone* zone, const bool with_sky, const std::vector<extra_leaf>& leaves,
+					utils::memory::allocator& allocator)
 				{
 					const auto cell_count = asset->dpvsPlanes.cellCount;
 
@@ -353,9 +367,11 @@ namespace zonetool::t7
 					{
 						node_total++;
 					}
+					node_total += static_cast<int>(leaves.size());
 					auto* tree = allocator.allocate_array<zonetool::iw7::GfxAabbTree>(node_total);
 					const auto slots = static_cast<int>(tree_cells.size());
-					auto next = 1 + slots + (with_sky ? 1 : 0);
+					const auto extra_first = 1 + slots + (with_sky ? 1 : 0);
+					auto next = extra_first + static_cast<int>(leaves.size());
 
 					float root_mins[3]{ FLT_MAX, FLT_MAX, FLT_MAX };
 					float root_maxs[3]{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
@@ -408,6 +424,29 @@ namespace zonetool::t7
 						}
 					}
 
+					for (auto l = 0u; l < leaves.size(); l++)
+					{
+						const auto& leaf = leaves[l];
+						auto& node = tree[extra_first + l];
+						set_bounds(node.bounds, leaf.mins, leaf.maxs);
+						node.childCount = 0;
+						node.childrenOffset = 0;
+						if (leaf.count > 0xFFFF)
+						{
+							ZONETOOL_FATAL("gfxworld: a world group of %u surfaces does not fit an AABB tree node", leaf.count);
+						}
+						node.startSurfIndex = leaf.begin;
+						node.surfaceCount = static_cast<unsigned short>(leaf.count);
+						node.smodelIndexCount = 0;
+						node.smodelIndexes = nullptr;
+						root_ranges.emplace_back(leaf.begin, leaf.begin + leaf.count);
+						for (auto k = 0; k < 3; k++)
+						{
+							root_mins[k] = std::min(root_mins[k], leaf.mins[k]);
+							root_maxs[k] = std::max(root_maxs[k], leaf.maxs[k]);
+						}
+					}
+
 					// the root's surfaces are the union of the cell roots' ranges, which must touch
 					std::sort(root_ranges.begin(), root_ranges.end());
 					for (auto i = 1u; i < root_ranges.size(); i++)
@@ -421,7 +460,11 @@ namespace zonetool::t7
 
 					auto& root = tree[0];
 					set_bounds(root.bounds, root_mins, root_maxs);
-					root.childCount = static_cast<unsigned short>(slots + (with_sky ? 1 : 0));
+					if (slots + (with_sky ? 1 : 0) + leaves.size() > 0xFFFF)
+					{
+						ZONETOOL_FATAL("gfxworld: %zu AABB tree root children", slots + (with_sky ? 1 : 0) + leaves.size());
+					}
+					root.childCount = static_cast<unsigned short>(slots + (with_sky ? 1 : 0) + leaves.size());
 					root.childrenOffset = static_cast<int>(sizeof(zonetool::iw7::GfxAabbTree));
 					root.startSurfIndex = root_ranges.empty() ? 0 : root_ranges.front().first;
 					root.surfaceCount = static_cast<unsigned short>(root_ranges.empty() ? 0
@@ -522,6 +565,30 @@ namespace zonetool::t7
 					12, 13, 14, 12, 14, 15, 16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
 				};
 
+				// a static world surface of a world group's members (static_model_clusters world_clusters): its vertices in the
+				// transient zone, its indices (relative to its first vertex) in prop_geometry::indices
+				struct prop_surface
+				{
+					const Material* material = nullptr;
+					unsigned int first_vertex = 0;
+					unsigned int vertex_count = 0;
+					unsigned int first_index = 0;
+					unsigned int tri_count = 0;
+					float mins[3]{};
+					float maxs[3]{};
+					float max_edge_length = 0.0f;
+					bool casts = false;
+					// the first triangle of each placed model's part (world_lightmap charts each part on its own)
+					std::vector<unsigned int> pieces;
+				};
+
+				struct prop_geometry
+				{
+					std::vector<prop_surface> surfaces;      // each group's together, in group order
+					std::vector<unsigned int> group_begin;   // per group its first surface
+					std::vector<unsigned short> indices;
+				};
+
 				struct surface_plan
 				{
 					// IW7 surface i is BO3 surface order[i]; BO3 surface s is IW7 surface remap[s]. The sky box, when
@@ -533,6 +600,8 @@ namespace zonetool::t7
 					unsigned int range_begin[4]{};
 					unsigned int range_end[4]{};
 					unsigned int sky = ~0u;
+					// the world groups' surfaces: entries [prop_begin, prop_begin + prop count)
+					unsigned int prop_begin = ~0u;
 				};
 
 				surface_geometry measure_surface(const GfxWorld* asset, const GfxSurface& surface)
@@ -584,7 +653,7 @@ namespace zonetool::t7
 					return geometry;
 				}
 
-				surface_plan plan_surfaces(const GfxWorld* asset, const world_material::info* sky)
+				surface_plan plan_surfaces(const GfxWorld* asset, const world_material::info* sky, const prop_geometry& props)
 				{
 					surface_plan plan{};
 					const auto surface_count = static_cast<unsigned int>(asset->surfaceCount);
@@ -661,11 +730,48 @@ namespace zonetool::t7
 						}
 					}
 
+					// the world groups' surfaces, each at the end of its range, one material's together (IW7 draws a run of
+					// consecutive visible surfaces of one material as one entry)
+					plan.prop_begin = static_cast<unsigned int>(plan.materials.size());
+					std::vector<unsigned int> by_material;
+					for (auto k = 0u; k < props.surfaces.size(); k++)
+					{
+						const auto& prop = props.surfaces[k];
+						plan.materials.push_back(&world_material::get(prop.material));
+						surface_geometry geometry{};
+						geometry.first_vertex = prop.first_vertex;
+						geometry.vertex_count = prop.vertex_count;
+						geometry.min_index = 0;
+						geometry.max_edge_length = prop.max_edge_length;
+						plan.geometry.push_back(geometry);
+						by_material.push_back(plan.prop_begin + k);
+					}
+					std::ranges::stable_sort(by_material, [&](const unsigned int a, const unsigned int b)
+					{
+						return plan.materials[a]->name < plan.materials[b]->name;
+					});
+					for (const auto source : by_material)
+					{
+						const auto r = range_of_sort_key(plan.materials[source]->sort_key);
+						plan.order.insert(plan.order.begin() + plan.range_end[r], source);
+						plan.range_end[r]++;
+						for (auto later = r + 1; later < 4; later++)
+						{
+							plan.range_begin[later]++;
+							plan.range_end[later]++;
+						}
+					}
+					plan.remap.assign(plan.materials.size(), 0);
+					for (auto i = 0u; i < plan.order.size(); i++)
+					{
+						plan.remap[plan.order[i]] = i;
+					}
+
 					return plan;
 				}
 
 				void convert_surfaces(const GfxWorld* asset, zonetool::iw7::GfxWorld* world, const surface_plan& plan,
-					const unsigned int sun_count, utils::memory::allocator& allocator)
+					const prop_geometry& props, const unsigned int sun_count, utils::memory::allocator& allocator)
 				{
 					const auto surface_count = static_cast<unsigned int>(plan.order.size());
 					const auto sun_mask = static_cast<unsigned char>((1u << sun_count) - 1u);
@@ -676,12 +782,17 @@ namespace zonetool::t7
 
 					// indices are rewritten relative to each surface's own first vertex; the sky box's follow BO3's
 					const auto source_indices = static_cast<unsigned int>(asset->draw.indexCount);
-					world->draw.indexCount = source_indices + (with_sky ? sky_box_indices : 0u);
+					const auto prop_indices = source_indices + (with_sky ? sky_box_indices : 0u);
+					world->draw.indexCount = prop_indices + static_cast<unsigned int>(props.indices.size());
 					world->draw.indices = allocator.allocate_array<unsigned short>(world->draw.indexCount);
 					std::memcpy(world->draw.indices, asset->draw.indices, sizeof(unsigned short) * source_indices);
 					if (with_sky)
 					{
 						std::memcpy(world->draw.indices + source_indices, sky_box_triangles, sizeof(sky_box_triangles));
+					}
+					if (!props.indices.empty())
+					{
+						std::memcpy(world->draw.indices + prop_indices, props.indices.data(), sizeof(unsigned short) * props.indices.size());
 					}
 
 					for (auto i = 0u; i < surface_count; i++)
@@ -706,6 +817,27 @@ namespace zonetool::t7
 							dst.flags = 0; // the box would shadow the whole world
 							auto& bounds = world->dpvs.surfacesBounds[i];
 							set_bounds(bounds.bounds, asset->mins, asset->maxs);
+							std::memset(bounds.unk, 0, sizeof(bounds.unk));
+							continue;
+						}
+
+						if (t7_index >= plan.prop_begin)
+						{
+							const auto& prop = props.surfaces[t7_index - plan.prop_begin];
+							dst = {};
+							dst.tris.firstVertex = prop.first_vertex;
+							dst.tris.maxEdgeLength = prop.max_edge_length;
+							dst.tris.vertexCount = static_cast<unsigned short>(prop.vertex_count);
+							dst.tris.triCount = static_cast<unsigned short>(prop.tri_count);
+							dst.tris.baseIndex = prop_indices + prop.first_index;
+							auto* stub = allocator.allocate<zonetool::iw7::Material>();
+							stub->name = allocator.duplicate_string(material.name);
+							dst.material = stub;
+							dst.lightmapIndex = material.lightmapped ? 0 : no_lightmap;
+							const auto casts_sun = material.casts_shadow && prop.casts;
+							dst.flags = casts_sun ? static_cast<unsigned char>(1 | (sun_mask << 3)) : 0;
+							auto& bounds = world->dpvs.surfacesBounds[i];
+							set_bounds(bounds.bounds, prop.mins, prop.maxs);
 							std::memset(bounds.unk, 0, sizeof(bounds.unk));
 							continue;
 						}
@@ -747,7 +879,7 @@ namespace zonetool::t7
 					}
 
 					const auto source_static = asset->dpvs.staticSurfaceCount;
-					const auto static_count = source_static + (with_sky ? 1u : 0u);
+					const auto static_count = source_static + (with_sky ? 1u : 0u) + static_cast<unsigned int>(props.surfaces.size());
 					world->dpvs.staticSurfaceCount = static_count;
 					world->dpvs.litOpaqueSurfsBegin = plan.range_begin[0];
 					world->dpvs.litOpaqueSurfsEnd = plan.range_end[0];
@@ -773,6 +905,11 @@ namespace zonetool::t7
 					if (with_sky)
 					{
 						world->dpvs.sortedSurfIndex[source_static] = plan.remap[plan.sky];
+					}
+					// the world groups' surfaces take the slots after the sky's, each group's together (prop_slot_begin)
+					for (auto k = 0u; k < props.surfaces.size(); k++)
+					{
+						world->dpvs.sortedSurfIndex[source_static + (with_sky ? 1u : 0u) + k] = plan.remap[plan.prop_begin + k];
 					}
 
 					// runtime in the zone (XFILE_BLOCK_RUNTIME), filled so the dump is self consistent
@@ -928,6 +1065,174 @@ namespace zonetool::t7
 					return zone;
 				}
 
+				// a world group surface's vertex cap: the lightmap's charts split its vertices (world_lightmap: at most 65536 a
+				// surface after the split)
+				constexpr std::size_t prop_surface_vertices = 16384;
+				// a placed surface's triangles go in chunks this size (at most 3 vertices each)
+				constexpr unsigned int prop_chunk_triangles = 4096;
+
+				// the world groups (static_model_clusters world_clusters) at their members' member_lod as static world surfaces:
+				// per group one surface a material (another past prop_surface_vertices), the vertices appended to the zone's
+				prop_geometry place_world_groups(const GfxWorld* asset, zonetool::iw7::GfxWorldTransientZone* zone,
+					utils::memory::allocator& allocator)
+				{
+					prop_geometry out;
+					const auto& clusters = static_model_clusters::current();
+					std::vector<zonetool::iw7::GfxWorldVertex> vertices;
+
+					struct open_surface
+					{
+						const Material* material = nullptr;
+						std::vector<zonetool::iw7::GfxWorldVertex> verts;
+						std::vector<unsigned short> indices;
+						std::vector<unsigned int> pieces;
+					};
+					const auto close = [&](open_surface& o, const bool casts)
+					{
+						if (o.indices.empty())
+						{
+							return;
+						}
+						prop_surface surface{};
+						surface.material = o.material;
+						surface.first_vertex = zone->vertexCount + static_cast<unsigned int>(vertices.size());
+						surface.vertex_count = static_cast<unsigned int>(o.verts.size());
+						surface.first_index = static_cast<unsigned int>(out.indices.size());
+						surface.tri_count = static_cast<unsigned int>(o.indices.size() / 3);
+						surface.casts = casts;
+						for (auto k = 0; k < 3; k++)
+						{
+							surface.mins[k] = FLT_MAX;
+							surface.maxs[k] = -FLT_MAX;
+						}
+						for (auto& v : o.verts)
+						{
+							for (auto k = 0; k < 3; k++)
+							{
+								surface.mins[k] = std::min(surface.mins[k], v.xyz[k]);
+								surface.maxs[k] = std::max(surface.maxs[k], v.xyz[k]);
+							}
+							for (auto c = 0; c < 3; c++)
+							{
+								v.color.array[c] = convert_vertex_color(v.color.array[c]);
+							}
+						}
+						for (auto t = 0u; t + 2 < o.indices.size(); t += 3)
+						{
+							for (auto e = 0; e < 3; e++)
+							{
+								const auto* a = o.verts[o.indices[t + e]].xyz;
+								const auto* b = o.verts[o.indices[t + (e + 1) % 3]].xyz;
+								const float d[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] };
+								surface.max_edge_length = std::max(surface.max_edge_length, std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]));
+							}
+						}
+						surface.pieces = std::move(o.pieces);
+						vertices.insert(vertices.end(), o.verts.begin(), o.verts.end());
+						out.indices.insert(out.indices.end(), o.indices.begin(), o.indices.end());
+						out.surfaces.push_back(std::move(surface));
+						o.verts.clear();
+						o.indices.clear();
+						o.pieces.clear();
+					};
+
+					for (const auto& group : clusters.world_clusters)
+					{
+						out.group_begin.push_back(static_cast<unsigned int>(out.surfaces.size()));
+						std::map<std::string, open_surface> open; // by material name: a group's surfaces in name order
+						for (const auto i : group.members)
+						{
+							const auto& src = asset->dpvs.smodelDrawInsts[i];
+							const auto meshes = xmodel::lod_meshes(src.model);
+							if (meshes.empty())
+							{
+								ZONETOOL_FATAL("gfxworld: world group %s member %u (%s) has no mesh", group.name.data(), i, src.model->name);
+							}
+							const auto lod = std::min<std::size_t>(clusters.member_lod[i], meshes.size() - 1);
+							const auto& [mesh, mats] = meshes[lod];
+							for (auto s = 0u; s < mats.size(); s++)
+							{
+								if (!mats[s])
+								{
+									continue;
+								}
+								auto& o = open[mats[s]->name];
+								o.material = mats[s];
+								// in chunks of prop_chunk_triangles: the lightmap's charts split a surface's vertices further
+								const auto triangles = static_cast<unsigned int>(mesh->surfs[s].triCount);
+								for (auto first = 0u; first < triangles; first += prop_chunk_triangles)
+								{
+									const auto n = std::min(prop_chunk_triangles, triangles - first);
+									const auto piece = static_cast<unsigned int>(o.indices.size() / 3);
+									if (!xmodel_mesh::append_placed_world(mesh, s, first, n, src.placement.origin, src.placement.axis,
+										src.placement.scale, o.verts, o.indices, prop_surface_vertices))
+									{
+										close(o, group.casts_shadow);
+										if (!xmodel_mesh::append_placed_world(mesh, s, first, n, src.placement.origin, src.placement.axis,
+											src.placement.scale, o.verts, o.indices, prop_surface_vertices))
+										{
+											ZONETOOL_FATAL("gfxworld: world group %s: triangles %u-%u of surface %u of %s do not fit a world surface",
+												group.name.data(), first, first + n, s, mesh->name);
+										}
+										o.pieces.push_back(0);
+										continue;
+									}
+									o.pieces.push_back(piece);
+								}
+							}
+						}
+						for (auto& [name, o] : open)
+						{
+							close(o, group.casts_shadow);
+						}
+					}
+
+					// the texture area each material's world group surfaces use: the world bake of a material only they use covers it
+					{
+						std::unordered_set<const Material*> on_world;
+						for (auto s = 0; s < asset->surfaceCount; s++)
+						{
+							on_world.insert(asset->dpvs.surfaces[s].material);
+						}
+						std::unordered_map<const Material*, world_material::uv_bounds> usage;
+						for (const auto& surface : out.surfaces)
+						{
+							if (on_world.contains(surface.material))
+							{
+								continue;
+							}
+							auto& uv = usage[surface.material];
+							const auto first = surface.first_vertex - zone->vertexCount;
+							for (auto v = first; v < first + surface.vertex_count; v++)
+							{
+								uv.add(vertices[v].texCoord[0], vertices[v].texCoord[1]);
+							}
+						}
+						std::vector<const Material*> props;
+						for (const auto& [material, uv] : usage)
+						{
+							world_material::set_world_usage(material, uv);
+							props.push_back(material);
+						}
+						// IW7 loads at most 15616 images across its zones: the placed models' materials share atlases as models do
+						std::ranges::sort(props, [](const Material* a, const Material* b) { return std::strcmp(a->name, b->name) < 0; });
+						world_material::plan_world_atlases(props);
+					}
+
+					if (!vertices.empty())
+					{
+						const auto before = zone->vertexCount;
+						auto* grown = allocator.allocate_array<zonetool::iw7::GfxWorldVertex>(before + vertices.size());
+						std::memcpy(grown, zone->vd.vertices, sizeof(zonetool::iw7::GfxWorldVertex) * before);
+						std::memcpy(grown + before, vertices.data(), sizeof(zonetool::iw7::GfxWorldVertex) * vertices.size());
+						zone->vd.vertices = grown;
+						zone->vertexCount = before + static_cast<unsigned int>(vertices.size());
+						ZONETOOL_INFO("gfxworld: %zu world groups of static models as %zu static world surfaces (%zu vertices, %zu triangles)",
+							clusters.world_clusters.size(), out.surfaces.size(), vertices.size(), out.indices.size() / 3);
+					}
+					return out;
+				}
+
 				// ---- static models ----------------------------------------------------------------
 
 				void convert_static_models(const GfxWorld* asset, zonetool::iw7::GfxWorld* world, const unsigned int sun_count,
@@ -953,13 +1258,42 @@ namespace zonetool::t7
 					// offset, and the draw reads mid-record (crash 0x140DEBF06); stock places no such static model. Such an
 					// instance stays in the list (every static model index holds) but is never drawn (cullDist 1, no shadow), and a script_model draws the model.
 					std::unordered_map<const XModel*, bool> too_many_surfaces;
+					// cullDist does not keep such an instance out of the lists: 0x140DCB890 skips it only while its scaled distance
+					// ((distance x scale + bias) x factor) is at least cullDist, which a close camera undercuts (crash 0x140DEC1C6,
+					// 2026-10-02: the entry for surface 16 of a posed cluster read mid-record). So the instance draws an opaque shadow
+					// proxy instead: shadow-only materials the camera's lists skip (camera region 11, 0x140DCE680), within 16
+					// surfaces (the shadow lists draw every proxy), and with no shadow of its own it draws nothing.
+					const char* hidden_model = nullptr;
+					{
+						const static_model_clusters::shadow_proxy* best = nullptr;
+						for (const auto& proxy : clusters.proxies)
+						{
+							if (!proxy.alpha && (!best || proxy.members.size() < best->members.size()))
+							{
+								best = &proxy;
+							}
+						}
+						if (best)
+						{
+							hidden_model = allocator.duplicate_string(best->name);
+						}
+					}
+					const auto hide = [&](zonetool::iw7::GfxStaticModelDrawInst& inst)
+					{
+						if (!hidden_model)
+						{
+							ZONETOOL_FATAL("gfxworld: a static model of more than 16 surfaces a LOD and no opaque shadow proxy to stand in for it");
+						}
+						inst.model = allocator.allocate<zonetool::iw7::XModel>();
+						inst.model->name = hidden_model;
+					};
 					std::vector<map_entities::entity> script_models;
 					std::map<std::string, unsigned int> moved;
 					unsigned int scaled = 0;
 
 					for (auto i = 0u; i < bo3_count; i++)
 					{
-						if (clusters.cluster_of[i] >= 0)
+						if (clusters.cluster_of[i] >= 0 || clusters.world_of[i] >= 0)
 						{
 							continue;
 						}
@@ -1014,6 +1348,7 @@ namespace zonetool::t7
 						if (known->second)
 						{
 							dst.cullDist = 1;
+							hide(dst);
 							if (!(dst.flags & zonetool::iw7::STATIC_MODEL_FLAG_NO_CAST_SHADOW))
 							{
 								dst.flags |= zonetool::iw7::STATIC_MODEL_FLAG_NO_CAST_SHADOW;
@@ -1081,6 +1416,7 @@ namespace zonetool::t7
 
 						if (group.too_many_surfaces)
 						{
+							hide(dst);
 							map_entities::entity e{};
 							e.set("classname", "script_model");
 							e.set("model", group.name);
@@ -1200,9 +1536,14 @@ namespace zonetool::t7
 						// model's surfaces are brush surfaces, which kept their order behind the static ones
 						if (m == 0)
 						{
-							if (src.startSurfIndex == 0 && src.surfaceCount == asset->dpvs.staticSurfaceCount && plan.sky != ~0u)
+							if (src.startSurfIndex == 0 && src.surfaceCount == asset->dpvs.staticSurfaceCount)
 							{
-								dst.surfaceCount = static_cast<unsigned short>(src.surfaceCount + 1);
+								const auto added = (plan.sky != ~0u ? 1u : 0u) + static_cast<unsigned int>(plan.materials.size() - plan.prop_begin);
+								if (src.surfaceCount + added > 0xFFFF)
+								{
+									ZONETOOL_FATAL("gfxworld: brush model 0 would hold %u surfaces", src.surfaceCount + added);
+								}
+								dst.surfaceCount = static_cast<unsigned short>(src.surfaceCount + added);
 							}
 						}
 						else if (src.surfaceCount && src.startSurfIndex != 0xFFFFFFFF)
@@ -1300,17 +1641,59 @@ namespace zonetool::t7
 						input.objects.push_back({ static_cast<std::uint32_t>(input.models.size() - 1), user_id, flags });
 					}
 
+					// a static model: a target of its members' boxes (a merged one draws where one of its members can be seen, not
+					// wherever its whole box can), and its opaque casting triangles as an occluder of their own (props are most of a
+					// BO3 map's walls and buildings)
+					auto smodel_occluders = 0u, smodel_occluder_triangles = 0u;
 					for (auto i = 0u; i < world->dpvs.smodelCount; i++)
 					{
-						const auto& bounds = world->dpvs.smodelInsts[i].bounds;
-						float mins[3], maxs[3];
-						for (auto k = 0; k < 3; k++)
+						std::vector<std::array<float, 6>> member_bounds;
+						umbra::tome_model occluder{};
+						static_model_clusters::umbra_geometry(i, member_bounds, occluder.vertices, occluder.indices);
+						const auto user_id = umbra::USER_ID_SMODEL | (i + 1);
+						if (member_bounds.empty())
 						{
-							mins[k] = bounds.midPoint[k] - bounds.halfSize[k];
-							maxs[k] = bounds.midPoint[k] + bounds.halfSize[k];
+							const auto& bounds = world->dpvs.smodelInsts[i].bounds;
+							float mins[3], maxs[3];
+							for (auto k = 0; k < 3; k++)
+							{
+								mins[k] = bounds.midPoint[k] - bounds.halfSize[k];
+								maxs[k] = bounds.midPoint[k] + bounds.halfSize[k];
+							}
+							input.objects.push_back({ input.add_box_model(mins, maxs), user_id, umbra_box_target });
 						}
-						input.objects.push_back({ input.add_box_model(mins, maxs), umbra::USER_ID_SMODEL | (i + 1), umbra_box_target });
+						else
+						{
+							umbra::tome_model boxes{};
+							for (const auto& b : member_bounds)
+							{
+								const auto first = static_cast<std::uint32_t>(boxes.vertices.size() / 3);
+								for (auto corner = 0; corner < 8; corner++)
+								{
+									boxes.vertices.push_back(b[(corner & 1) ? 3 : 0]);
+									boxes.vertices.push_back(b[(corner & 2) ? 4 : 1]);
+									boxes.vertices.push_back(b[(corner & 4) ? 5 : 2]);
+								}
+								static constexpr std::uint32_t faces[36] = { 0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4,
+									2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5 };
+								for (const auto f : faces)
+								{
+									boxes.indices.push_back(first + f);
+								}
+							}
+							input.models.emplace_back(std::move(boxes));
+							input.objects.push_back({ static_cast<std::uint32_t>(input.models.size() - 1), user_id, umbra_box_target });
+						}
+						if (!occluder.indices.empty())
+						{
+							smodel_occluders++;
+							smodel_occluder_triangles += static_cast<unsigned int>(occluder.indices.size() / 3);
+							input.models.emplace_back(std::move(occluder));
+							input.objects.push_back({ static_cast<std::uint32_t>(input.models.size() - 1), user_id,
+								static_cast<std::uint32_t>(umbra::SCENE_OBJECT_OCCLUDER) });
+						}
 					}
+					ZONETOOL_INFO("umbra: %u static models occlude with %u opaque triangles", smodel_occluders, smodel_occluder_triangles);
 
 					const auto* com_world = comworld::converted();
 					auto bounded_lights = 0u;
@@ -1388,7 +1771,7 @@ namespace zonetool::t7
 						for (auto o = 0u; o < input.objects.size(); o++)
 						{
 							auto& object = input.objects[o];
-							if (present.contains(object.user_id))
+							if (present.contains(object.user_id) || !(object.flags & umbra::SCENE_OBJECT_TARGET))
 							{
 								continue;
 							}
@@ -1467,6 +1850,31 @@ namespace zonetool::t7
 				}
 				comworld::export_flicker(asset);
 
+				// ZT_PROBE_SAMPLE="x y z;x y z;...": BO3's state 0 probe diffuse at each point for +-x, +-y, +z normals, then exit
+				if (const auto* points = std::getenv("ZT_PROBE_SAMPLE"))
+				{
+					probe_lighting::evaluator eval(asset, map::lighting_state());
+					for (const auto& text : utils::string::split(points, ';'))
+					{
+						float p[3]{};
+						if (std::sscanf(text.data(), "%f %f %f", &p[0], &p[1], &p[2]) != 3)
+						{
+							continue;
+						}
+						const auto v = eval.volume_at(p);
+						eval.load(v);
+						const float normals[5][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 } };
+						float out[5][3]{};
+						eval.diffuse(v, p, normals, 5, out);
+						ZONETOOL_INFO("probe sample (%g %g %g) volume %u: +x %.4f %.4f %.4f | -x %.4f %.4f %.4f | +y %.4f %.4f %.4f | -y %.4f %.4f %.4f | +z %.4f %.4f %.4f",
+							p[0], p[1], p[2], v, out[0][0], out[0][1], out[0][2], out[1][0], out[1][1], out[1][2], out[2][0], out[2][1], out[2][2],
+							out[3][0], out[3][1], out[3][2], out[4][0], out[4][1], out[4][2]);
+						eval.unload(v);
+					}
+					std::fflush(stdout);
+					std::_Exit(0);
+				}
+
 				// primary light 0 is the null light and 1 the sun (comworld.cpp)
 				constexpr auto sun_count = 1u;
 
@@ -1515,7 +1923,6 @@ namespace zonetool::t7
 				world->draw.transientZones[0] = zone;
 				// which static models IW7 draws merged, before the cells name them (static_model_clusters.hpp)
 				static_model_clusters::make_plan(asset, map::map_name(asset->name));
-				convert_cells(asset, world, zone, sky.has_value(), allocator);
 
 				// IW7's lit shaders sample the world's IES lookup (code texture 4) whatever light they draw with; without one
 				// the first lit draw fails ("Tried to use codeTexture 4 'iesLookupTexture' when it isn't valid"). The converted
@@ -1564,8 +1971,19 @@ namespace zonetool::t7
 						ZONETOOL_INFO("gfxworld: BO3 image %s written (%ux%ux%u, %u faces, %u levels, format %u)", image_name.data(), pixels.width,
 							pixels.height, pixels.depth, pixels.faces, pixels.levels, static_cast<unsigned int>(pixels.format));
 					};
-					for (const auto* material_name : { "bloom_apply_lut", "luts_t7_scurve", "create_lut2dv" })
+					// and the materials named in ZT_DUMP_MATERIAL_SHADERS (comma separated), for reading a template the
+					// converter does not handle yet
+					std::vector<std::string> shader_materials = { "bloom_apply_lut", "luts_t7_scurve", "luts_t7_default", "create_lut2dv" };
+					if (const auto* extra = std::getenv("ZT_DUMP_MATERIAL_SHADERS"))
 					{
+						for (const auto& name : utils::string::split(extra, ','))
+						{
+							shader_materials.push_back(name);
+						}
+					}
+					for (const auto& material_name_string : shader_materials)
+					{
+						const auto* material_name = material_name_string.data();
 						const auto* entry = zonetool::t7::DB_FindXAssetEntry(ASSET_TYPE_MATERIAL, material_name, false);
 						const auto* material = entry ? reinterpret_cast<const Material*>(entry->asset.header.data) : nullptr;
 						if (!material || !material->techniqueSet)
@@ -1677,6 +2095,7 @@ namespace zonetool::t7
 							ZONETOOL_INFO("gfxworld: BO3 SST exported to %s", out);
 						}
 					}
+					ZONETOOL_INFO("gfxworld: main sun volume %u (map::main_sun_volume)", map::main_sun_volume(asset));
 					for (auto v = 0u; v < asset->sunVolumeCount; v++)
 					{
 						const auto& sv = asset->sunVolumes[v];
@@ -1813,22 +2232,78 @@ namespace zonetool::t7
 					}
 				}
 
-				world_material::prepare(asset);
+				{
+					// the materials of the models the GfxWorld draws, whose decal layers take world decal keys
+					std::vector<const Material*> props;
+					std::unordered_set<const Material*> seen;
+					for (const auto& group : static_model_clusters::current().world_clusters)
+					{
+						for (const auto i : group.members)
+						{
+							for (const auto& [mesh, mats] : xmodel::lod_meshes(asset->dpvs.smodelDrawInsts[i].model))
+							{
+								for (const auto* material : mats)
+								{
+									if (material && seen.insert(material).second)
+									{
+										props.push_back(material);
+									}
+								}
+							}
+						}
+					}
+					world_material::prepare(asset, props);
+				}
 				// which static models' sun shadows the shadow proxies draw (static_model_clusters.hpp), before the static model
 				// count is used
 				static_model_clusters::plan_shadow_proxies(asset, map::map_name(asset->name));
 
+				// the world groups' surfaces (their members' LODs are known now), then the cells: a leaf a group, its surfaces'
+				// sorted slots after the sky's
+				const auto props = place_world_groups(asset, zone, allocator);
+				{
+					std::vector<extra_leaf> leaves;
+					const auto first_slot = asset->dpvs.staticSurfaceCount + (sky ? 1u : 0u);
+					for (auto g = 0u; g < props.group_begin.size(); g++)
+					{
+						const auto begin = props.group_begin[g];
+						const auto end = g + 1 < props.group_begin.size() ? props.group_begin[g + 1] : static_cast<unsigned int>(props.surfaces.size());
+						if (begin == end)
+						{
+							continue;
+						}
+						extra_leaf leaf{};
+						leaf.begin = first_slot + begin;
+						leaf.count = end - begin;
+						for (auto k = 0; k < 3; k++)
+						{
+							leaf.mins[k] = FLT_MAX;
+							leaf.maxs[k] = -FLT_MAX;
+						}
+						for (auto s = begin; s < end; s++)
+						{
+							for (auto k = 0; k < 3; k++)
+							{
+								leaf.mins[k] = std::min(leaf.mins[k], props.surfaces[s].mins[k]);
+								leaf.maxs[k] = std::max(leaf.maxs[k], props.surfaces[s].maxs[k]);
+							}
+						}
+						leaves.push_back(leaf);
+					}
+					convert_cells(asset, world, zone, sky.has_value(), leaves, allocator);
+				}
+
 				// vis-data word counts (stock formulas); surfaces are addressed by static index only
-				const auto static_count = asset->dpvs.staticSurfaceCount + (sky ? 1u : 0u);
+				const auto static_count = asset->dpvs.staticSurfaceCount + (sky ? 1u : 0u) + static_cast<unsigned int>(props.surfaces.size());
 				world->dpvs.surfaceVisDataCount = (static_count + 31) >> 5;
 				world->dpvs.smodelVisDataCount = (static_model_clusters::current().iw7_count + 31) >> 5;
 				world->dpvs.primaryLightVisDataCount = (world->primaryLightCount + 31) >> 5;
 
-				const auto plan = plan_surfaces(asset, sky ? &sky_info : nullptr);
+				const auto plan = plan_surfaces(asset, sky ? &sky_info : nullptr, props);
 				world->surfaceCount = static_cast<unsigned int>(plan.order.size());
 				apply_uv_periods(asset, zone, plan);
 				apply_vertex_alpha_white(zone, plan);
-				convert_surfaces(asset, world, plan, sun_count, allocator);
+				convert_surfaces(asset, world, plan, props, sun_count, allocator);
 				convert_static_models(asset, world, sun_count, allocator);
 				{
 					// a static model no node lists is never drawn: the root takes it
@@ -1909,8 +2384,8 @@ namespace zonetool::t7
 				// dynamic entities
 				for (auto i = 0; i < 2; i++)
 				{
-					world->dpvsDyn.dynEntClientCount[i] = asset->dpvsDyn.dynEntClientCount[i];
-					world->dpvsDyn.dynEntClientWordCount[i] = (asset->dpvsDyn.dynEntClientCount[i] + 31) >> 5;
+					world->dpvsDyn.dynEntClientCount[i] = i == 0 ? map::reserved_dynents : 0;
+					world->dpvsDyn.dynEntClientWordCount[i] = (world->dpvsDyn.dynEntClientCount[i] + 31) >> 5;
 				}
 
 				// runtime buffer sizes (stock formulas)
@@ -1947,7 +2422,8 @@ namespace zonetool::t7
 					// but IW7's sun shadow draws it, flag 1)
 					const auto& material = *plan.materials[plan.order[i]];
 					const auto blocks = occluders[i] || (plan.order[i] != plan.sky && material.cls == world_material::surface_class::shadow_only);
-					sun_occluders[i] = blocks && (world->dpvs.surfaces[i].flags & 1);
+					// a world group's surfaces block as their static models (sun_blockers places those, alpha masks included)
+					sun_occluders[i] = blocks && (world->dpvs.surfaces[i].flags & 1) && plan.order[i] < plan.prop_begin;
 				}
 				{
 					// what is left out of the sun's blockers, by material (a left-out wall or ceiling lets the sun in)
@@ -1971,11 +2447,75 @@ namespace zonetool::t7
 				// rebuilds the vertices)
 				const world_lightmap::sun_blockers sun_blockers(asset, world, zone, sun_occluders);
 				// lightmap charts split vertices, so this goes before anything reads them
-				world_lightmap::bake(asset, world, zone, sun_blockers, allocator);
+				{
+					// each world group surface's placed parts, by IW7 surface (charted on their own)
+					std::unordered_map<unsigned int, std::vector<unsigned int>> pieces;
+					for (auto k = 0u; k < props.surfaces.size(); k++)
+					{
+						pieces.emplace(plan.remap[plan.prop_begin + k], props.surfaces[k].pieces);
+					}
+					world_lightmap::bake(asset, world, zone, sun_blockers, pieces, allocator);
+				}
 				reflection_probes::convert(asset, world, allocator);
+				{
+					std::vector<char> sun_only(world->surfaceCount, 0);
+					for (auto i = 0u; i < world->surfaceCount; i++)
+					{
+						sun_only[i] = plan.order[i] >= plan.prop_begin && plan.order[i] != plan.sky;
+					}
+					world_lights::set_sun_only_casters(std::move(sun_only));
+				}
 				world_lights::build(world, allocator);
 				world_lightgrid::build(asset, world, zone, occluders, sun_blockers, allocator);
 				generate_umbra_tome(world, zone, plan, allocator);
+
+				// Every stock map has one heightfield (0x140DE7F50 binds its image and lookup matrix for the sun shadow pass);
+				// Spaceland's and mp_riot's are a 1x1 R16_UNORM over the map. This one sits at the bottom of the map's bounds, so it
+				// shades nothing and past the cascades the sun is the baked lightmaps' and probes'.
+				if (world->modelCount > 0)
+				{
+					const auto& b = world->models[0].bounds;
+					float mid[3], half[3];
+					for (auto k = 0; k < 3; k++)
+					{
+						mid[k] = b.midPoint[k];
+						half[k] = std::max(b.halfSize[k], 1.0f) + 1024.0f;
+					}
+					world->heightfieldCount = 1;
+					world->heightfields = allocator.allocate_array<zonetool::iw7::GfxHeightfield>(1);
+					auto& field = world->heightfields[0];
+					std::memcpy(field.bounds.midPoint, mid, sizeof(mid));
+					std::memcpy(field.bounds.halfSize, half, sizeof(half));
+					std::memset(field.lookupMatrix, 0, sizeof(field.lookupMatrix));
+					field.lookupMatrix[0][0] = 0.5f / half[0];
+					field.lookupMatrix[1][1] = -0.5f / half[1];
+					field.lookupMatrix[2][2] = 0.5f / half[2];
+					field.lookupMatrix[3][0] = 0.5f - mid[0] * 0.5f / half[0];
+					field.lookupMatrix[3][1] = 0.5f + mid[1] * 0.5f / half[1];
+					field.lookupMatrix[3][2] = 0.5f - mid[2] * 0.5f / half[2];
+					field.lookupMatrix[3][3] = 1.0f;
+
+					const auto name = map::map_name(asset->name) + "_heightmap0";
+					static std::uint8_t pixels[4] = { 0, 0, 0, 0 };
+					zonetool::iw7::GfxImage image{};
+					image.imageFormat = DXGI_FORMAT_R16_UNORM;
+					image.flags = 3;
+					image.mapType = zonetool::iw7::MAPTYPE_2D;
+					image.semantic = zonetool::iw7::TS_FUNCTION;
+					image.category = zonetool::iw7::IMG_CATEGORY_AUTO_GENERATED;
+					image.dataLen1 = sizeof(pixels);
+					image.dataLen2 = sizeof(pixels);
+					image.width = 1;
+					image.height = 1;
+					image.depth = 1;
+					image.numElements = 1;
+					image.levelCount = 1;
+					image.pixelData = pixels;
+					image.name = name.data();
+					zonetool::iw7::gfx_image::dump(&image);
+					field.image = allocator.allocate<zonetool::iw7::GfxImage>();
+					field.image->name = allocator.duplicate_string(name);
+				}
 
 				ZONETOOL_INFO("gfxworld \"%s\": %u surfaces (%u static: opaque [%u, %u) decal [%u, %u) trans [%u, %u) "
 					"emissive [%u, %u)), %u vertices, %u indices", world->name, world->surfaceCount,

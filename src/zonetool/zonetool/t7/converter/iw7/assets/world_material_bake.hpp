@@ -165,6 +165,7 @@ namespace zonetool::t7
 		{
 			std::string cs; // the atlas images
 			std::string ng;
+			std::string a; // an alpha-tested atlas's coverage (BC4), else empty
 			std::uint32_t columns = 1;
 			std::uint32_t rows = 1;
 			std::uint32_t column = 0;
@@ -175,13 +176,18 @@ namespace zonetool::t7
 
 		// the tile a model material's bake takes in an atlas (its bake size rounded up to a size atlases share), or
 		// false when it cannot share one
-		bool atlas_tile(const Material* material, const info& inf, std::uint32_t& width, std::uint32_t& height);
+		bool atlas_tile(const Material* material, const info& inf, std::uint32_t& width, std::uint32_t& height, bool& alpha_tested,
+			std::string* why = nullptr);
 
 		// bakes the material at the slot's tile size into the slot; before the material is baked
 		void set_atlas(const Material* material, const info& inf, const atlas_slot& slot);
 
 		// writes the atlases a failed material left incomplete (its tile empty); after every material is baked
 		void flush_atlases();
+
+		// atlas members whose written materials are identical but for their name draw as one (material::set_shared); after
+		// flush_atlases
+		void share_atlas_materials();
 
 		// writes a material of a stock IW7 techset from its donor (constants, state, flags, sort key) with the
 		// given images by texture type hash (the sky's w_sky)

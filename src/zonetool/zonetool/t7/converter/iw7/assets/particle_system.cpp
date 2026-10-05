@@ -31,7 +31,7 @@
 // * INIT_ATLAS (0xD0F950): playRate, startFrame, loopCount (-1: forever), then two bytes: +20 random start frame,
 //   +21 play over life.
 // * an omni light's colour is rgb x size.y x 493.38132 with radius size.x (R_AddDynamicOmniLight), falling off as
-//   1 / d^2; BO3's falls off as min(1, dAtt^2 / d^2), so size.y = intensity x dAtt^2 / 493.38132.
+//   1 / d^2; BO3's falls off as min(1, dAtt^2 / d^2), so size.y = intensity x template peak x dAtt^2 / 493.38132.
 
 namespace zonetool::t7
 {
@@ -179,6 +179,23 @@ namespace zonetool::t7
 				bool is_sprite_type(const unsigned char type)
 				{
 					return type <= T7_ELEM_TYPE_CLOUD;
+				}
+
+				const GfxConfig_Light* light_template(const FxElemDef* elem)
+				{
+					const auto* visual = elem->visualCount == 1 ? elem->visuals.instance.anonymous : nullptr;
+					const auto* config = visual ? reinterpret_cast<const GfxConfig_Light*>(static_cast<const char*>(visual) + 8) : nullptr;
+					return config && is_readable(config, sizeof(GfxConfig_Light)) ? config : nullptr;
+				}
+
+				// A BO3 effect light shines with its particle's colour x its template's _color x the particle's intensity,
+				// falling off as min(1, dAtt^2 / d^2) (the vending prefab lights zmhd fx_perk_mule_kick stands in for: its
+				// lamps 2^9.9 against the prefab's 2^9.97, its spot over the sign 2^14.6 against 2^15.7). IW7 takes the
+				// template's brightest channel in the intensity and its tint in the colour.
+				float light_template_peak(const FxElemDef* elem)
+				{
+					const auto* config = light_template(elem);
+					return config ? std::max({ config->_color[0], config->_color[1], config->_color[2], 0.0f }) : 0.0f;
 				}
 
 				bool is_light_type(const unsigned char type)
@@ -348,7 +365,13 @@ namespace zonetool::t7
 						{
 							return v;
 						}
-						return light ? srgb_decode(v) : (sprite ? std::sqrt(v) : v);
+						if (light)
+						{
+							const auto* config = light_template(ctx.elem);
+							const auto peak = light_template_peak(ctx.elem);
+							return srgb_decode(v) * (config && peak > 0.0f ? config->_color[c] / peak : 1.0f);
+						}
+						return sprite ? std::sqrt(v) : v;
 					};
 
 					auto module = new_module(i7::PARTICLE_MODULE_COLOR_GRAPH);
@@ -425,16 +448,13 @@ namespace zonetool::t7
 					const auto* elem = ctx.elem;
 					const auto nonuniform = (elem->flags & T7_FX_ELEM_NONUNIFORM_SCALE) != 0;
 
-					// the template's attenuation distance for lights (light_template)
+					// lights: the template's brightest channel (light_template_peak) and attenuation distance
 					auto light_scale = map::bo3_light_scale;
 					if (is_light_type(elem->elemType))
 					{
-						const auto* visual = elem->visualCount == 1 ? elem->visuals.instance.anonymous : nullptr;
-						const auto* config = visual ? reinterpret_cast<const GfxConfig_Light*>(static_cast<const char*>(visual) + 8) : nullptr;
-						if (config && is_readable(config, sizeof(GfxConfig_Light)))
-						{
-							light_scale = config->dAttenuation * config->dAttenuation / omni_light_unit * map::bo3_light_scale;
-						}
+						const auto* config = light_template(elem);
+						const auto d_att = config ? config->dAttenuation : 1.0f;
+						light_scale = light_template_peak(elem) * d_att * d_att / omni_light_unit * map::bo3_light_scale;
 					}
 
 					enum class channel { none, size0, size1, scale, radius, intensity };
@@ -1063,6 +1083,12 @@ namespace zonetool::t7
 					{
 						data.m_linkedAssetList.assetList[i].particleSystem = alias_asset<i7::ParticleSystemDef>(names[i], *ctx.allocator);
 					}
+					// an aimed spot light's child takes its runner particle's rotation: every stock runner turning a light
+					// child sets this byte (cp_disco vfx_train_front, vfx_disco_police_lights)
+					if (ctx.element_part == part::spot_runner)
+					{
+						data.m_pad[1] |= 1;
+					}
 					ctx.state_flags |= i7::PARTICLE_STATE_DEF_FLAG_HAS_CHILD_EFFECTS;
 					modules.push_back(module);
 				}
@@ -1376,7 +1402,7 @@ namespace zonetool::t7
 
 					if (elem->fadeInRange.amplitude != 0.0f || elem->fadeOutRange.amplitude != 0.0f)
 					{
-						ZONETOOL_INFO("effect \"%s\": element %d fades by camera distance: in [%g, %g], out [%g, %g] (not converted)",
+						ZONETOOL_INFO("effect \"%s\": element %d fades by camera distance: in [%g, %g], out [%g, %g] (spawns past the middles)",
 							ctx.effect->name, ctx.elem_index, elem->fadeInRange.base, elem->fadeInRange.base + elem->fadeInRange.amplitude,
 							elem->fadeOutRange.base, elem->fadeOutRange.base + elem->fadeOutRange.amplitude);
 					}
@@ -1387,6 +1413,22 @@ namespace zonetool::t7
 					{
 						const auto range_min = std::max(0.0f, elem->spawnRange.base);
 						const auto range_max = elem->spawnRange.base + elem->spawnRange.amplitude;
+						emitter->spawnRangeSq.min = range_min * range_min;
+						emitter->spawnRangeSq.max = range_max * range_max;
+					}
+					// BO3 fades the element in or out by camera distance; it spawns only past the fade's middle
+					if ((elem->fadeInRange.amplitude != 0.0f || elem->fadeOutRange.amplitude != 0.0f) && !light_part)
+					{
+						auto range_min = std::sqrt(emitter->spawnRangeSq.min);
+						auto range_max = emitter->spawnRangeSq.max > 0.0f ? std::sqrt(emitter->spawnRangeSq.max) : 1.0e6f;
+						if (elem->fadeInRange.amplitude != 0.0f)
+						{
+							range_min = std::max(range_min, elem->fadeInRange.base + elem->fadeInRange.amplitude * 0.5f);
+						}
+						if (elem->fadeOutRange.amplitude != 0.0f)
+						{
+							range_max = std::min(range_max, elem->fadeOutRange.base + elem->fadeOutRange.amplitude * 0.5f);
+						}
 						emitter->spawnRangeSq.min = range_min * range_min;
 						emitter->spawnRangeSq.max = range_max * range_max;
 					}
@@ -1451,6 +1493,24 @@ namespace zonetool::t7
 
 				// a spot light BO3 turns away from the effect's axis (its particle axis, 0x140207ED0, from the spawn angles and
 				// angular velocity; the light shines along it, 0x140201EA0)
+				// one spawn origin and one spawn angle for every particle, and no turning
+				bool fixed_spawn(const FxElemDef* elem)
+				{
+					if ((elem->flags & T7_FX_ELEM_SPAWN_OFFSET_MASK) != 0 || (elem->flags & T7_FX_ELEM_SPAWN_RELATIVE_TO_EFFECT) == 0)
+					{
+						return false;
+					}
+					for (auto i = 0; i < 3; i++)
+					{
+						if (elem->spawnOrigin[i].amplitude != 0.0f || elem->spawnAngles[i].amplitude != 0.0f ||
+							elem->angularVelocity[i].base != 0.0f || elem->angularVelocity[i].amplitude != 0.0f)
+						{
+							return false;
+						}
+					}
+					return true;
+				}
+
 				bool aimed_spot(const FxElemDef* elem, const convert_context& ctx)
 				{
 					if (convert_elem_type(elem, ctx) != i7::PARTICLE_ELEMENT_TYPE_LIGHT_SPOT)
@@ -1497,6 +1557,38 @@ namespace zonetool::t7
 						ZONETOOL_INFO("trace \"%s\" elem %d: type %u, visuals %u, flags 0x%X, colour %u %u %u %u, intensity %g, radius %g",
 							asset->name, i, elem->elemType, elem->visualCount, elem->flags, c ? c[0] : 0, c ? c[1] : 0, c ? c[2] : 0,
 							c ? c[3] : 0, vis.samples ? vis.samples[0].base.intensity : 0.0f, vis.samples ? vis.samples[0].base.radius : 0.0f);
+						if (is_light_type(elem->elemType) && elem->visualCount == 1)
+						{
+							const auto* cfg = reinterpret_cast<const GfxConfig_Light*>(static_cast<const char*>(elem->visuals.instance.anonymous) + 8);
+							if (is_readable(cfg, sizeof(GfxConfig_Light)))
+							{
+								ZONETOOL_INFO("trace elem %d light template: type %d, dAtt %g, cut %g..%g, edge %g %g, colour %g %g %g", i,
+									static_cast<int>(cfg->type), cfg->dAttenuation, cfg->cut_on, cfg->cut_off, cfg->near_edge, cfg->far_edge,
+									cfg->_color[0], cfg->_color[1], cfg->_color[2]);
+							}
+						}
+						ZONETOOL_INFO("trace elem %d spawn angles %g+%g %g+%g %g+%g", i, elem->spawnAngles[0].base, elem->spawnAngles[0].amplitude,
+							elem->spawnAngles[1].base, elem->spawnAngles[1].amplitude, elem->spawnAngles[2].base, elem->spawnAngles[2].amplitude);
+						ZONETOOL_INFO("trace elem %d spawn origin %g+%g %g+%g %g+%g", i, elem->spawnOrigin[0].base, elem->spawnOrigin[0].amplitude,
+							elem->spawnOrigin[1].base, elem->spawnOrigin[1].amplitude, elem->spawnOrigin[2].base, elem->spawnOrigin[2].amplitude);
+						const auto vel = get_vel_samples(elem);
+						for (auto k = 0; k < vel.count; k++)
+						{
+							const auto& l = vel.samples[k].local;
+							const auto& w = vel.samples[k].world;
+							ZONETOOL_INFO("trace elem %d velocity %d: local %g %g %g + %g %g %g, world %g %g %g + %g %g %g", i, k,
+								l.velocity_base[0], l.velocity_base[1], l.velocity_base[2], l.velocity_amplitude[0], l.velocity_amplitude[1],
+								l.velocity_amplitude[2], w.velocity_base[0], w.velocity_base[1], w.velocity_base[2], w.velocity_amplitude[0],
+								w.velocity_amplitude[1], w.velocity_amplitude[2]);
+						}
+						for (auto k = 0; k < vis.count; k++)
+						{
+							const auto& b = vis.samples[k].base;
+							const auto& a = vis.samples[k].amplitude;
+							ZONETOOL_INFO("trace elem %d sample %d: colour %u %u %u %u / %u %u %u %u, intensity %g / %g", i, k,
+								b.color[0], b.color[1], b.color[2], b.color[3], a.color[0], a.color[1], a.color[2], a.color[3],
+								b.intensity, a.intensity);
+						}
 					}
 					// sounds, lens flares and the types without a visual have no conversion yet
 					if (elem->elemType > T7_ELEM_TYPE_RUNNER || elem->elemType == T7_ELEM_TYPE_SOUND ||
@@ -1507,7 +1599,48 @@ namespace zonetool::t7
 					}
 					if (children && aimed_spot(elem, ctx))
 					{
-						// the light alone in an effect of its own, which the element's runner spawns, turned
+						// IW7 aims an effect light along its effect's +X only (0x140D07D30 / 0x140D08130 take the effect's
+						// frame, never the particle's rotation), so a fixed aimed spot is an effect of its own, played in
+						// the frame BO3 gives it: its spawn origin, and AngleVectors of its spawn angles (pitch, yaw, roll)
+						if (fixed_spawn(elem))
+						{
+							auto still = *elem;
+							for (auto k = 0; k < 3; k++)
+							{
+								still.spawnOrigin[k] = {};
+								still.spawnAngles[k] = {};
+							}
+							auto* child = allocator.allocate<i7::ParticleSystemDef>();
+							child->name = allocator.duplicate_string(std::string(out->name) + "_l" + std::to_string(i));
+							child->emitterDefs = allocator.allocate_array<i7::ParticleEmitterDef>(1);
+							auto light = ctx;
+							light.elem = &still;
+							light.system_flags = 0;
+							light.emitter_flags = 0;
+							if (convert_elem(light, &child->emitterDefs[0], i < asset->elemDefCountLooping))
+							{
+								child->numEmitters = 1;
+								finish_system(child, light.system_flags);
+								children->push_back(child);
+								aimed_light a{ out->name, child->name };
+								const auto* angles = elem->spawnAngles;
+								const auto s_p = std::sin(angles[0].base), c_p = std::cos(angles[0].base);
+								const auto s_y = std::sin(angles[1].base), c_y = std::cos(angles[1].base);
+								const auto s_r = std::sin(angles[2].base), c_r = std::cos(angles[2].base);
+								const float forward[3] = { c_p * c_y, c_p * s_y, -s_p };
+								const float up[3] = { c_r * s_p * c_y + s_r * s_y, c_r * s_p * s_y - s_r * c_y, c_r * c_p };
+								for (auto k = 0; k < 3; k++)
+								{
+									a.origin[k] = elem->spawnOrigin[k].base;
+									a.forward[k] = forward[k];
+									a.up[k] = up[k];
+								}
+								aimed_lights().push_back(a);
+							}
+							continue;
+						}
+						ZONETOOL_WARNING("effect \"%s\": element %d is a spot light with random or turning spawn angles; IW7 aims it along the effect's axis", asset->name, i);
+						// the light alone in an effect of its own, which the element's runner spawns
 						auto* child = allocator.allocate<i7::ParticleSystemDef>();
 						child->name = allocator.duplicate_string(std::string(out->name) + "_l" + std::to_string(i));
 						child->emitterDefs = allocator.allocate_array<i7::ParticleEmitterDef>(1);
@@ -1532,6 +1665,12 @@ namespace zonetool::t7
 				out->numEmitters = converted;
 				finish_system(out, ctx.system_flags);
 				return out;
+			}
+
+			std::vector<aimed_light>& aimed_lights()
+			{
+				static std::vector<aimed_light> lights;
+				return lights;
 			}
 
 			zonetool::iw7::ParticleSystemDef* convert(FxEffectDef* asset, utils::memory::allocator& allocator, const references& refs)

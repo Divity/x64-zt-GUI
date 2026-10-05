@@ -414,6 +414,63 @@ namespace zonetool::t7
 				table += utils::string::va("\tlevel._effect[ \"%s\" ] = LoadFX( \"%s\" );\r\n", id.data(), path.data());
 				rows.push_back("vfx," + iw7_effect_name(name));
 			}
+
+			// aimed spot lights (particlesystem::aimed_light): each its own effect, which whoever plays the parent plays
+			// with it: level.t7_fx_aimed[ parent id ] = [ [ light id, origin, forward, up ], ... ] in the parent's frame
+			// (x forward, y left, z up)
+			table += "\tlevel.t7_fx_aimed = [];\r\n";
+			for (const auto& [name, id] : ids)
+			{
+				const auto parent = iw7_effect_name(name);
+				std::vector<const particlesystem::aimed_light*> aimed;
+				for (const auto& a : particlesystem::aimed_lights())
+				{
+					if (a.effect == parent)
+					{
+						aimed.push_back(&a);
+					}
+				}
+				if (aimed.empty())
+				{
+					continue;
+				}
+				if (std::ranges::any_of(placed, [&](const placement& p) { return p.effect == name; }))
+				{
+					ZONETOOL_WARNING("effect \"%s\": the map places it, but its %zu aimed spot lights only play where a script plays it", name.data(), aimed.size());
+				}
+				table += "\tlights = [];\r\n";
+				// fixed point: a GSC number has no exponent
+				const auto fixed = [](const float v)
+				{
+					std::string text = utils::string::va("%.5f", std::abs(v) < 0.000005f ? 0.0f : v);
+					text.erase(text.find_last_not_of('0') + 1);
+					if (text.back() == '.')
+					{
+						text.pop_back();
+					}
+					return text;
+				};
+				for (const auto* a : aimed)
+				{
+					const auto light_id = id + a->light.substr(parent.size());
+					auto path = a->light + ".vfx";
+					if (path.size() > max_fx_path)
+					{
+						path = a->light;
+					}
+					if (path.size() > max_fx_path)
+					{
+						ZONETOOL_ERROR("effect path %s is longer than the %zu characters IW7's client reads", path.data(), max_fx_path);
+					}
+					table += utils::string::va("\tlevel._effect[ \"%s\" ] = LoadFX( \"%s\" );\r\n", light_id.data(), path.data());
+					table += utils::string::va("\tlights[ lights.size ] = [ \"%s\", ( %s, %s, %s ), ( %s, %s, %s ), ( %s, %s, %s ) ];\r\n",
+						light_id.data(), fixed(a->origin[0]).data(), fixed(a->origin[1]).data(), fixed(a->origin[2]).data(),
+						fixed(a->forward[0]).data(), fixed(a->forward[1]).data(), fixed(a->forward[2]).data(),
+						fixed(a->up[0]).data(), fixed(a->up[1]).data(), fixed(a->up[2]).data());
+					rows.push_back("vfx," + a->light);
+				}
+				table += utils::string::va("\tlevel.t7_fx_aimed[ \"%s\" ] = lights;\r\n", id.data());
+			}
 			table += "}\r\n";
 
 			std::string gen = "//_createfx generated. Do not touch!!\r\n#include scripts\\common\\utility;\r\n#include scripts\\common\\createfx;\r\n\r\nmain()\r\n{\r\n";
