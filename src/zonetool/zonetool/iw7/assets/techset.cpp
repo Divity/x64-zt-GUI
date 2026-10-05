@@ -505,35 +505,21 @@ namespace zonetool::iw7
 						/*technique_passes[pass].vertexDecl =
 							reinterpret_cast<MaterialVertexDeclaration*>(zone->get_asset_pointer(
 								ASSET_TYPE_VERTEXDECL, technique_passes[pass].vertexDecl->name));*/
-						std::uintptr_t ptr = get_vertexdecl_pointer(technique_passes[pass].vertexDecl->name);
-						if (ptr)
+						buf->push_stream(XFILE_BLOCK_TEMP);
+						buf->align(7);
+
+						auto vertexDecl = buf->write(data->techniques[technique]->passArray[pass].vertexDecl);
+
+						buf->push_stream(XFILE_BLOCK_VIRTUAL);
+						if (data->techniques[technique]->passArray[pass].vertexDecl->name)
 						{
-							technique_passes[pass].vertexDecl = reinterpret_cast<MaterialVertexDeclaration*>(ptr);
+							vertexDecl->name = buf->write_str(data->techniques[technique]->passArray[pass].vertexDecl->name);
 						}
-						else
-						{
-							buf->push_stream(XFILE_BLOCK_TEMP);
+						buf->pop_stream();
 
-							buf->push_stream(XFILE_BLOCK_VIRTUAL);
-							buf->align(7);
-							ptr = reinterpret_cast<std::uintptr_t>(buf->get_zone_pointer<MaterialVertexDeclaration>(buf->current_stream(), buf->stream_offset(XFILE_BLOCK_VIRTUAL)));
-							add_vertexdecl_pointer(technique_passes[pass].vertexDecl->name, ptr);
-							buf->inc_stream(XFILE_BLOCK_VIRTUAL, 8);
-							buf->pop_stream();
+						buf->clear_pointer(&technique_passes[pass].vertexDecl);
 
-							auto vertexDecl = buf->write(data->techniques[technique]->passArray[pass].vertexDecl);
-
-							buf->push_stream(XFILE_BLOCK_VIRTUAL);
-							if (data->techniques[technique]->passArray[pass].vertexDecl->name)
-							{
-								vertexDecl->name = buf->write_str(data->techniques[technique]->passArray[pass].vertexDecl->name);
-							}
-							buf->pop_stream();
-
-							buf->insert_pointer(&technique_passes[pass].vertexDecl);
-
-							buf->pop_stream();
-						}
+						buf->pop_stream();
 					}
 
 					if (technique_passes[pass].hullShader)

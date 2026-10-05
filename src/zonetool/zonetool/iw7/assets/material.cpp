@@ -24,10 +24,10 @@
 		cent##entry["name"] = name.data(); \
 		cent##entry["nameHash"] = asset->entry[i].nameHash; \
 		nlohmann::json centliteral##entry; \
-		centliteral##entry[0] = asset->entry[i].literal[0]; \
-		centliteral##entry[1] = asset->entry[i].literal[1]; \
-		centliteral##entry[2] = asset->entry[i].literal[2]; \
-		centliteral##entry[3] = asset->entry[i].literal[3]; \
+		centliteral##entry[0] = literal_to_json(asset->entry[i].literal[0]); \
+		centliteral##entry[1] = literal_to_json(asset->entry[i].literal[1]); \
+		centliteral##entry[2] = literal_to_json(asset->entry[i].literal[2]); \
+		centliteral##entry[3] = literal_to_json(asset->entry[i].literal[3]); \
 		cent##entry["literal"] = centliteral##entry; \
 		carr##entry[i] = cent##entry; \
 	} \
@@ -55,6 +55,80 @@ namespace zonetool::iw7
 			}
 
 			return new_name;
+		}
+
+		nlohmann::json literal_to_json(const float value)
+		{
+			if (std::isnan(value))
+			{
+				return "nan";
+			}
+
+			if (std::isinf(value))
+			{
+				return value > 0.0f ? "inf" : "-inf";
+			}
+
+			return value;
+		}
+
+		float json_to_literal(const nlohmann::json& value, bool* unknown)
+		{
+			if (value.is_null())
+			{
+				*unknown = true;
+				return std::numeric_limits<float>::quiet_NaN();
+			}
+
+			if (value.is_string())
+			{
+				const auto str = value.get<std::string>();
+				if (str == "inf")
+				{
+					return std::numeric_limits<float>::infinity();
+				}
+
+				if (str == "-inf")
+				{
+					return -std::numeric_limits<float>::infinity();
+				}
+
+				return std::numeric_limits<float>::quiet_NaN();
+			}
+
+			return value.get<float>();
+		}
+
+		void restore_unknown_literals_from_cbt(Material* mat, const std::vector<std::array<bool, 4>>& unknown)
+		{
+			for (auto o = 0u; o < mat->constantCount && o < unknown.size(); o++)
+			{
+				for (auto lane = 0; lane < 4; lane++)
+				{
+					if (!unknown[o][lane])
+					{
+						continue;
+					}
+
+					auto restored = false;
+					for (auto i = 0u; i < mat->constantBufferCount && !restored; i++)
+					{
+						const auto cbt = &mat->constantBufferTable[i];
+
+#define RESTORE_CONSTANT_TABLE_VALUE(__data__, __offset_data__, __offset_size__) \
+						if (!restored && cbt->__data__ && cbt->__offset_data__ && o < cbt->__offset_size__ && cbt->__offset_data__[o] != 0xFFFF) \
+						{ \
+							mat->constantTable[o].literal[lane] = reinterpret_cast<float*>(&cbt->__data__[cbt->__offset_data__[o]])[lane]; \
+							restored = true; \
+						} \
+
+						RESTORE_CONSTANT_TABLE_VALUE(vsData, vsOffsetData, vsOffsetDataSize);
+						RESTORE_CONSTANT_TABLE_VALUE(hsData, hsOffsetData, hsOffsetDataSize);
+						RESTORE_CONSTANT_TABLE_VALUE(dsData, dsOffsetData, dsOffsetDataSize);
+						RESTORE_CONSTANT_TABLE_VALUE(psData, psOffsetData, psOffsetDataSize);
+					}
+				}
+			}
 		}
 
 		void copy_constant_table_to_cbt(Material* mat)
@@ -259,6 +333,7 @@ namespace zonetool::iw7
 		}
 
 		json constantTable = matdata["constantTable"];
+		std::vector<std::array<bool, 4>> unknown_literals(constantTable.size(), { false, false, false, false });
 		if (constantTable.size() > 0)
 		{
 			auto constant_def = mem->allocate<MaterialConstantDef>(constantTable.size());
@@ -266,10 +341,10 @@ namespace zonetool::iw7
 			{
 				strcat(constant_def[i].name, constantTable[i]["name"].get<std::string>().data());
 				constant_def[i].nameHash = constantTable[i]["nameHash"].get<unsigned int>();
-				constant_def[i].literal[0] = constantTable[i]["literal"][0].is_null() ? std::numeric_limits<float>::quiet_NaN() : constantTable[i]["literal"][0].get<float>();
-				constant_def[i].literal[1] = constantTable[i]["literal"][1].is_null() ? std::numeric_limits<float>::quiet_NaN() : constantTable[i]["literal"][1].get<float>();
-				constant_def[i].literal[2] = constantTable[i]["literal"][2].is_null() ? std::numeric_limits<float>::quiet_NaN() : constantTable[i]["literal"][2].get<float>();
-				constant_def[i].literal[3] = constantTable[i]["literal"][3].is_null() ? std::numeric_limits<float>::quiet_NaN() : constantTable[i]["literal"][3].get<float>();
+				for (auto lane = 0; lane < 4; lane++)
+				{
+					constant_def[i].literal[lane] = json_to_literal(constantTable[i]["literal"][lane], &unknown_literals[i][lane]);
+				}
 			}
 			mat->constantTable = constant_def;
 		}
@@ -297,6 +372,7 @@ namespace zonetool::iw7
 				techset::parse_constant_buffer_indexes(mat->techniqueSet->name, c_name.data(), mat->constantBufferIndex, mem);
 
 				techset::parse_constant_buffer_def_array(mat->techniqueSet->name, c_name.data(), &mat->constantBufferTable, &mat->constantBufferCount, mem);
+				restore_unknown_literals_from_cbt(mat, unknown_literals);
 				copy_constant_table_to_cbt(mat);
 			}
 		}

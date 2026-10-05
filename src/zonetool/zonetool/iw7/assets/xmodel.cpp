@@ -97,7 +97,12 @@ namespace zonetool::iw7
 		if (const auto* no_model_physics = std::getenv("ZT_NO_MODEL_PHYSICS");
 			no_model_physics && no_model_physics[0] == '1')
 		{
-			asset->physicsAsset = nullptr;
+			// keep character ragdolls (ragdoll_*): without its physics asset a model cannot ragdoll, so an agent killed
+			// while traversing (the game starts an immediate ragdoll there) freezes in its pose
+			if (!asset->physicsAsset || !asset->physicsAsset->name || std::strncmp(asset->physicsAsset->name, "ragdoll_", 8) != 0)
+			{
+				asset->physicsAsset = nullptr;
+			}
 		}
 
 		const auto havok_data_path = "xmodel\\"s + name + "_lod";
